@@ -1,0 +1,90 @@
+{
+    "meta": {
+        "template_name": "Europass Classic",
+        "target_role": "Software Engineer",
+        "version": "1.0"
+    },
+    "personal": {
+        "name": "Alex Morgan",
+        "date_of_birth": "",
+        "place_of_birth": "",
+        "nationality": "",
+        "gender": "",
+        "phone": "+00 000 0000000",
+        "email": "alex.morgan@example.com",
+        "whatsapp": "",
+        "address": "Example City"
+    },
+    "about": "Sample CV used to preview the template. Upload your own CV to replace it.",
+    "education": [
+        {
+            "date": "2018 - 2022",
+            "location": "Example City",
+            "degree": "BSc Computer Science",
+            "institution": "Example University",
+            "details": "Software Engineering"
+        }
+    ],
+    "experience": [
+        {
+            "title": "Software Engineer",
+            "company": "Example Ltd",
+            "period": "2022 - Present",
+            "location": "Example City",
+            "website": "",
+            "summary": "Builds and maintains web applications.",
+            "projects": "",
+            "highlights": [
+                "Developed REST APIs used by internal teams.",
+                "Improved page load times through query optimisation."
+            ]
+        }
+    ],
+    "projects": [
+        {
+            "period": "2024",
+            "title": "Sample Project",
+            "subtitle": "Web application",
+            "description": "A short description of a project.",
+            "link": ""
+        }
+    ],
+    "languages": {
+        "mother": "English",
+        "other": [
+            {
+                "name": "French",
+                "listening": "B2",
+                "reading": "B2",
+                "speaking_production": "B1",
+                "speaking_interaction": "B1",
+                "writing": "B1"
+            }
+        ]
+    },
+    "driving": "",
+    "interests": [
+        {
+            "title": "",
+            "description": "Open-source software and technical writing."
+        }
+    ],
+    "hobbies": "",
+    "skills": [
+        {
+            "label": "Technical",
+            "items": ["PHP", "Laravel", "MySQL", "JavaScript"]
+        },
+        {
+            "label": "Soft skills",
+            "items": ["Communication", "Teamwork"]
+        }
+    ],
+    "certifications": [
+        {
+            "type": "Online",
+            "title": "Sample Certificate",
+            "detail": "Example Academy"
+        }
+    ]
+}

@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>CV Template</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:ital,wght@0,300;0,400;0,600;0,700;1,400&display=swap" rel="stylesheet"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --purple: #5C2D91;
+    --purple-light: #7B4DB5;
+    --white: #ffffff;
+    --text: #1a1a1a;
+    --muted: #555555;
+    --border: #cccccc;
+    --line: #e0e0e0;
+    --page-bg: #d0d0d0;
+  }
+
+  html { font-size: 13.5px; }
+
+  body {
+    font-family: 'Source Sans 3', Calibri, 'Segoe UI', sans-serif;
+    background: var(--page-bg);
+    color: var(--text);
+    display: flex;
+    justify-content: center;
+    padding: 30px 15px;
+    min-height: 100vh;
+  }
+
+  .page {
+    width: 794px;
+    min-height: 1120px;
+    background: var(--white);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.22);
+  }
+
+  .header {
+    background: var(--purple);
+    padding: 28px 36px 28px 32px;
+    display: flex;
+    align-items: flex-start;
+    gap: 24px;
+  }
+
+  .header-photo {
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    border: 3px solid rgba(255,255,255,0.45);
+    overflow: hidden;
+    background: rgba(255,255,255,0.15);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(255,255,255,0.72);
+    font-size: 0.72rem;
+    text-align: center;
+    line-height: 1.4;
+  }
+
+  .header-photo img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .header-photo.is-hidden { display: none; }
+
+  .header-info { flex: 1; padding-top: 4px; }
+
+  .header-name {
+    font-size: 2.1rem;
+    font-weight: 700;
+    color: var(--white);
+    margin-bottom: 12px;
+    line-height: 1.15;
+  }
+
+  .header-meta {
+    color: rgba(255,255,255,0.92);
+    font-size: 0.84rem;
+    line-height: 1.85;
+    font-weight: 400;
+  }
+
+  .header-meta .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+  }
+
+  .header-meta .field { display: inline; }
+  .header-meta strong { font-weight: 700; color: var(--white); }
+
+  .sep {
+    display: inline-block;
+    margin: 0 7px;
+    opacity: 0.6;
+    font-weight: 300;
+  }
+
+  .body { padding: 10px 36px 40px 32px; }
+
+  .section { margin-top: 22px; }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+
+  .section-dot {
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: var(--purple);
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+
+  .section-title {
+    font-size: 0.82rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text);
+    white-space: nowrap;
+  }
+
+  .section-line {
+    flex: 1;
+    height: 1.5px;
+    background: var(--purple);
+    opacity: 0.35;
+  }
+
+  .about-text,
+  .driving-text,
+  .hobbies-text,
+  .skills-list,
+  .cert-detail,
+  .work-desc,
+  .proj-desc {
+    font-size: 0.82rem;
+    color: var(--muted);
+    line-height: 1.65;
+  }
+
+  .about-text p,
+  .hobbies-text p,
+  .cert-detail p,
+  .work-desc p {
+    margin-bottom: 6px;
+  }
+
+  .about-text p:last-child,
+  .hobbies-text p:last-child,
+  .cert-detail p:last-child,
+  .work-desc p:last-child {
+    margin-bottom: 0;
+  }
+
+  .edu-entry,
+  .proj-entry,
+  .cert-entry {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    gap: 0 18px;
+  }
+
+  .edu-entry { margin-bottom: 14px; }
+  .proj-entry { margin-bottom: 16px; }
+  .cert-entry { margin-bottom: 12px; }
+
+  .edu-date,
+  .proj-date,
+  .cert-type {
+    font-size: 0.82rem;
+    color: var(--muted);
+    padding-top: 1px;
+    line-height: 1.5;
+  }
+
+  .edu-degree,
+  .proj-title,
+  .cert-title {
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1.45;
+  }
+
+  .edu-degree span {
+    font-weight: 400;
+    color: var(--muted);
+  }
+
+  .edu-field,
+  .proj-subtitle {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: 3px;
+    line-height: 1.55;
+  }
+
+  .proj-desc { margin-bottom: 4px; }
+
+  .proj-link {
+    font-size: 0.8rem;
+    color: var(--muted);
+  }
+
+  .proj-link a,
+  .work-website a {
+    color: var(--purple);
+    text-decoration: none;
+  }
+
+  .proj-link a:hover,
+  .work-website a:hover {
+    text-decoration: underline;
+  }
+
+  .work-entry { margin-bottom: 20px; }
+
+  .work-header {
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: var(--text);
+    line-height: 1.5;
+    margin-bottom: 2px;
+  }
+
+  .work-website {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .work-separator {
+    width: 46%;
+    height: 1px;
+    background: var(--border);
+    margin-bottom: 10px;
+  }
+
+  .work-meta {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .work-meta strong,
+  .hobbies-text strong {
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .work-subproject { margin-bottom: 10px; }
+
+  .work-subproject-title {
+    font-size: 0.84rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
+
+  .work-list {
+    margin: 6px 0 0 16px;
+    color: var(--muted);
+    font-size: 0.81rem;
+    line-height: 1.6;
+  }
+
+  .work-list li { margin-bottom: 3px; }
+
+  .lang-mother,
+  .lang-other-label {
+    font-size: 0.83rem;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+
+  .lang-mother { margin-bottom: 10px; }
+  .lang-other-label { margin-bottom: 8px; }
+  .lang-mother strong,
+  .lang-other-label strong {
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .lang-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.79rem;
+    margin-bottom: 8px;
+  }
+
+  .lang-table thead tr th {
+    background: var(--purple);
+    color: var(--white);
+    font-weight: 600;
+    text-align: center;
+    padding: 5px 8px;
+    border: 1px solid var(--purple-light);
+    font-size: 0.76rem;
+    letter-spacing: 0.03em;
+  }
+
+  .lang-table thead tr th.group-header {
+    font-size: 0.7rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    background: color-mix(in srgb, var(--purple) 80%, black);
+  }
+
+  .lang-table tbody tr td {
+    text-align: center;
+    padding: 5px 8px;
+    border: 1px solid var(--line);
+    color: var(--text);
+    font-weight: 400;
+  }
+
+  .lang-table tbody tr td.lang-name {
+    font-weight: 700;
+    text-align: left;
+    background: #f9f9f9;
+  }
+
+  .lang-table tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--purple-light) 6%, white); }
+  .lang-table tbody tr:nth-child(even) td.lang-name { background: color-mix(in srgb, var(--purple-light) 14%, white); }
+
+  .lang-note {
+    font-size: 0.74rem;
+    color: var(--muted);
+    font-style: italic;
+    margin-top: 4px;
+    line-height: 1.55;
+  }
+
+  .skills-block { margin-bottom: 10px; }
+
+  .skills-label {
+    font-size: 0.83rem;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+
+  @page { size: A4; margin: 12mm 0; }
+  @page :first { margin-top: 0; }
+
+  @media print {
+    html, body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { background: white; padding: 0; min-height: 0; display: block; }
+    .page { box-shadow: none; width: 100%; min-height: 0; }
+    .edu-entry, .work-entry, .proj-entry, .cert-entry, .skills-block, .section-header { break-inside: avoid; }
+    .section-header { break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="header">
+    <div class="header-photo" id="headerPhoto">Photo</div>
+    <div class="header-info">
+      <div class="header-name" id="headerName">Candidate Name</div>
+      <div class="header-meta" id="headerMeta"></div>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="section" id="aboutSection">
+      <div class="section-header">
+        <div class="section-dot"></div>
+        <div class="section-title">About</div>
+        <div class="section-line"></div>
+      </div>
+      <div class="about-text" id="aboutText"></div>
+    </div>
+
+    <div class="section" id="educationSection">
+      <div class="section-header">
+        <div class="section-dot"></div>
+        <div class="section-title">Education and Training</div>
+        <div class="section-line"></div>
+      </div>
+      <div class="edu-entries" id="eduEntries"></div>
+    </div>
+
+    <div class="section" id="experienceSection">
+      <div class="section-header">
+        <div class="section-dot"></div>
+        <div class="section-title">Work Experience</div>
+        <div class="section-line"></div>
+      </div>
+      <div id="workEntries"></div>
+    </div>
+
+    <div class="section" id="projectsSection">
+      <div class="section-header">
+        <div class="section-dot"></div>
+        <div class="section-title">Projects</div>
+        <div class="section-line"></div>
+      </div>
+      <div id="projectEntries"></div>
+    </div>
+
+    <div class="section" id="languagesSection">
+      <div class="section-header">
+        <div class="section-dot"></div>
+        <div class="section-title">Language Skills</div>
+        <div class="section-line"></div>
+      </div>
+      <div class="lang-mother" id="langMother"></div>
+      <div class="lang-other-label" id="langOtherLabel"><strong>Other language(s):</strong></div>
+      <table class="lang-table">
+        <thead>
+          <tr>
+            <th rowspan="2" style="text-align:left; width:120px;"></th>
+            <th colspan="2" class="group-header">Understanding</th>
+            <th colspan="2" class="group-header">Speaking</th>
+            <th class="group-header">Writing</th>
+          </tr>
+          <tr>
+            <th>Listening</th>
+            <th>Reading</th>
+            <th>Spoken production</th>
+            <th>Spoken interaction</th>
+            <th>Writing</th>
+          </tr>
+        </thead>
+        <tbody id="langRows"></tbody>
+      </table>
+      <div class="lang-note">Levels: A1 and A2: Basic user; B1 and B2: Independent user; C1 and C2: Proficient user</div>
+    </div>
+
+    <div class="section" id="drivingSection">
+      <div class="section-header">
+        <div class="section-dot"></div>
+        <div class="section-title">Driving Licence</div>
+        <div class="section-line"></div>
+      </div>
+      <div class="driving-text" id="drivingText"></div>
+    </div>
+
+    <div class="section" id="interestsSection">
+      <div class="section-header">
+        <div class="section-dot"></div>
+        <div class="section-title">Hobbies and Interests</div>
+        <div class="section-line"></div>
+      </div>
+      <div class="hobbies-text" id="hobbiesText"></div>
+    </div>
+
+    <div class="section" id="skillsRootSection">
+      <div class="section-header">
+        <div class="section-dot"></div>
+        <div class="section-title">Skills</div>
+        <div class="section-line"></div>
+      </div>
+      <div id="skillsSection"></div>
+    </div>
+
+    <div class="section" id="certificationsRootSection">
+      <div class="section-header">
+        <div class="section-dot"></div>
+        <div class="section-title">Certifications</div>
+        <div class="section-line"></div>
+      </div>
+      <div id="certificationsSection"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const dataDir = 'cv_data';
+  const defaultFile = 'default.json';
+  const query = new URLSearchParams(window.location.search);
+  const fileName = sanitizeFile(query.get('file')) || defaultFile;
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const embeddedData = readEmbeddedData();
+    if (embeddedData) {
+      renderTemplate(normalizeCvData(embeddedData));
+      return;
+    }
+
+    loadTemplate(fileName)
+      .then(data => renderTemplate(normalizeCvData(data)))
+      .catch(error => console.error('Template load failed:', error));
+  });
+
+  function readEmbeddedData() {
+    const element = document.getElementById('cvData');
+    if (!element) return null;
+
+    try {
+      return JSON.parse(element.textContent);
+    } catch (error) {
+      console.error('Embedded CV data is invalid JSON:', error);
+      return null;
+    }
+  }
+
+  function sanitizeFile(file) {
+    if (!file || typeof file !== 'string') return null;
+    const safe = file.replace(/[^a-zA-Z0-9_.-]/g, '');
+    return safe.endsWith('.json') ? safe : null;
+  }
+
+  async function loadTemplate(file) {
+    const response = await fetch(`${dataDir}/${encodeURIComponent(file)}`);
+    if (!response.ok) {
+      throw new Error(`Could not load template data: ${response.status}`);
+    }
+
+    return response.json();
+  }
+
+  function normalizeCvData(data) {
+    const value = data && typeof data === 'object' ? data : {};
+
+    return {
+      ...value,
+      personal: value.personal && typeof value.personal === 'object' ? value.personal : {},
+      about: asText(value.about),
+      education: normalizeEntries(value.education, hasEducationContent),
+      experience: normalizeExperience(value.experience),
+      projects: normalizeEntries(value.projects, hasProjectContent),
+      skills: normalizeSkills(value.skills),
+      interests: normalizeInterests(value.interests || value.hobbies),
+      languages: normalizeLanguages(value.languages),
+      certifications: normalizeEntries(value.certifications, hasCertificationContent)
+    };
+  }
+
+  function renderTemplate(data) {
+    const personal = data.personal || {};
+    applyTheme(data.theme);
+
+    if (personal.name) {
+      document.title = `${personal.name} - CV`;
+    }
+
+    setText('headerName', personal.name || 'Candidate Name');
+    setHtml('headerMeta', createHeaderMeta(personal));
+    renderProfilePhoto(personal.photo || personal.profile_photo || '');
+    setHtml('aboutText', createParagraphs(data.about));
+    setHtml('eduEntries', data.education.map(createEducationEntry).join(''));
+    setHtml('workEntries', data.experience.map(createWorkEntry).join(''));
+    setHtml('projectEntries', data.projects.map(createProjectEntry).join(''));
+    setHtml('skillsSection', data.skills.map(createSkillBlock).join(''));
+    setHtml('certificationsSection', data.certifications.map(createCertificationEntry).join(''));
+    setText('drivingText', data.driving || '');
+    setHtml('hobbiesText', data.interests.map(createInterestEntry).join(''));
+
+    if (data.languages?.mother) {
+      setHtml('langMother', `<strong>Mother tongue(s):</strong> ${escapeHtml(data.languages.mother)}`);
+    } else {
+      setHtml('langMother', '');
+    }
+
+    if (Array.isArray(data.languages?.other) && data.languages.other.length) {
+      setHtml('langRows', data.languages.other.map(createLanguageRow).join(''));
+      toggleSection('langOtherLabel', true);
+      toggleElement('.lang-table', true);
+      toggleElement('.lang-note', true);
+    } else {
+      setHtml('langRows', '');
+      toggleSection('langOtherLabel', false);
+      toggleElement('.lang-table', false);
+      toggleElement('.lang-note', false);
+    }
+
+    toggleSection('educationSection', data.education.length > 0);
+    toggleSection('experienceSection', data.experience.length > 0);
+    toggleSection('projectsSection', data.projects.length > 0);
+    toggleSection('languagesSection', hasLanguagesContent(data.languages));
+    toggleSection('drivingSection', Boolean(data.driving));
+    toggleSection('interestsSection', data.interests.length > 0);
+    toggleSection('skillsRootSection', data.skills.length > 0);
+    toggleSection('certificationsRootSection', data.certifications.length > 0);
+  }
+
+  function applyTheme(theme) {
+    if (!theme || typeof theme !== 'object') return;
+
+    const root = document.documentElement;
+    const primary = safeColor(theme.primary);
+    const primaryLight = safeColor(theme.primary_light || theme.primaryLight);
+
+    if (primary) root.style.setProperty('--purple', primary);
+    if (primaryLight) root.style.setProperty('--purple-light', primaryLight);
+  }
+
+  function safeColor(value) {
+    const color = asText(value);
+    return /^#[0-9a-f]{6}$/i.test(color) ? color : '';
+  }
+
+  function renderProfilePhoto(photo) {
+    const holder = document.getElementById('headerPhoto');
+    const photoUrl = asText(photo);
+
+    if (!holder) return;
+
+    if (!photoUrl) {
+      holder.classList.add('is-hidden');
+      holder.innerHTML = '';
+      return;
+    }
+
+    holder.classList.remove('is-hidden');
+    holder.innerHTML = `<img src="${escapeHtml(photoUrl)}" alt="Profile photo"/>`;
+  }
+
+  function createHeaderMeta(personal) {
+    const fields = [
+      ['Date of birth', personal.date_of_birth],
+      ['Place of birth', personal.place_of_birth],
+      ['Nationality', personal.nationality],
+      ['Gender', personal.gender],
+      ['Phone number', personal.phone],
+      ['Email address', personal.email],
+      ['Whatsapp Messenger', personal.whatsapp],
+      ['Address', personal.address]
+    ].filter(([, value]) => Boolean(value));
+
+    const rows = [];
+    for (let index = 0; index < fields.length; index += 2) {
+      const rowFields = fields.slice(index, index + 2).map(([label, value]) => {
+        return `<span class="field"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(value)}</span>`;
+      });
+      rows.push(`<div class="row">${rowFields.join('<span class="sep">|</span>')}</div>`);
+    }
+
+    return rows.join('');
+  }
+
+  function createEducationEntry(entry) {
+    const degreeLine = [entry.degree, entry.institution].filter(Boolean);
+
+    return `
+      <div class="edu-entry">
+        <div class="edu-date">${escapeLines([entry.date, entry.location].filter(Boolean).join('\n'))}</div>
+        <div class="edu-right">
+          <div class="edu-degree">${escapeHtml(degreeLine[0] || '')}${degreeLine[1] ? ` &nbsp;<span>${escapeHtml(degreeLine[1])}</span>` : ''}</div>
+          ${entry.details ? `<div class="edu-field">${escapeHtml(entry.details)}</div>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function createWorkEntry(entry) {
+    const heading = [entry.title, entry.company, entry.period, entry.location].filter(Boolean).join(' - ');
+    const websiteUrl = safeUrl(entry.website);
+    const description = Array.isArray(entry.description) ? entry.description.join('\n') : entry.description;
+    const highlights = asArray(entry.highlights);
+    let html = `
+      <div class="work-entry">
+        <div class="work-header">${escapeHtml(heading)}</div>
+    `;
+
+    if (websiteUrl) {
+      html += `<div class="work-website">Website: &nbsp;<a href="${escapeHtml(websiteUrl)}" target="_blank" rel="noopener">${escapeHtml(entry.website)}</a></div>`;
+    }
+
+    html += '<div class="work-separator"></div>';
+
+    if (entry.business_sector || entry.department) {
+      html += `<div class="work-meta">${entry.business_sector ? `<strong>Business or Sector:</strong> ${escapeHtml(entry.business_sector)}` : ''}${entry.business_sector && entry.department ? ' &nbsp;|&nbsp; ' : ''}${entry.department ? `<strong>Department:</strong> ${escapeHtml(entry.department)}` : ''}</div>`;
+    }
+
+    if (entry.summary) {
+      html += `<div class="work-desc">${createParagraphs(entry.summary)}</div>`;
+    }
+
+    if (Array.isArray(entry.projects)) {
+      html += entry.projects.map(project => `
+        <div class="work-subproject">
+          <div class="work-subproject-title">${escapeHtml(project.title || '')}</div>
+          <div class="work-desc">${createParagraphs(project.description || '')}</div>
+        </div>
+      `).join('');
+    }
+
+    if (description) {
+      html += `<div class="work-desc">${createParagraphs(description)}</div>`;
+    }
+
+    if (highlights.length) {
+      html += `<ul class="work-list">${highlights.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`;
+    }
+
+    html += '</div>';
+    return html;
+  }
+
+  function createProjectEntry(entry) {
+    const linkUrl = safeUrl(entry.link);
+
+    return `
+      <div class="proj-entry">
+        <div class="proj-date">${escapeHtml(entry.period || '')}</div>
+        <div class="proj-right">
+          <div class="proj-title">${escapeHtml(entry.title || '')}</div>
+          ${entry.subtitle ? `<div class="proj-subtitle">${escapeHtml(entry.subtitle)}</div>` : ''}
+          ${entry.description ? `<div class="proj-desc">${escapeHtml(entry.description)}</div>` : ''}
+          ${linkUrl ? `<div class="proj-link">Link &nbsp;<a href="${escapeHtml(linkUrl)}" target="_blank" rel="noopener">${escapeHtml(entry.link)}</a></div>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function createLanguageRow(lang) {
+    return `
+      <tr>
+        <td class="lang-name">${escapeHtml(lang.name || '')}</td>
+        <td>${escapeHtml(lang.listening || '')}</td>
+        <td>${escapeHtml(lang.reading || '')}</td>
+        <td>${escapeHtml(lang.speaking_production || '')}</td>
+        <td>${escapeHtml(lang.speaking_interaction || '')}</td>
+        <td>${escapeHtml(lang.writing || '')}</td>
+      </tr>
+    `;
+  }
+
+  function createInterestEntry(entry) {
+    if (!entry.title) {
+      return `<p>${escapeLines(entry.description || '')}</p>`;
+    }
+
+    return `<p><strong>${escapeHtml(entry.title)}:</strong><br/>${escapeLines(entry.description || '')}</p>`;
+  }
+
+  function createSkillBlock(skill) {
+    const items = asList(skill.items);
+
+    return `
+      <div class="skills-block">
+        <div class="skills-label">${escapeHtml(skill.label || 'Skills')}</div>
+        <div class="skills-list">${escapeHtml(items.join(', '))}</div>
+      </div>
+    `;
+  }
+
+  function createCertificationEntry(cert) {
+    return `
+      <div class="cert-entry">
+        <div class="cert-type">${escapeLines(cert.type || '')}</div>
+        <div class="cert-right">
+          <div class="cert-title">${escapeHtml(cert.title || '')}</div>
+          <div class="cert-detail">${createParagraphs(cert.detail || '')}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function normalizeExperience(value) {
+    if (Array.isArray(value)) return normalizeEntries(value, hasExperienceContent);
+    if (typeof value === 'string' && value.trim()) {
+      return [{ title: 'Experience', description: value.trim() }];
+    }
+
+    return [];
+  }
+
+  function normalizeEntries(value, predicate) {
+    if (!Array.isArray(value)) return [];
+
+    return value
+      .filter(item => item && typeof item === 'object')
+      .filter(predicate);
+  }
+
+  function normalizeLanguages(value) {
+    const languages = value && typeof value === 'object' ? value : {};
+    const other = Array.isArray(languages.other)
+      ? languages.other.filter(hasLanguageContent)
+      : [];
+
+    return {
+      mother: asText(languages.mother),
+      other
+    };
+  }
+
+  function hasEducationContent(entry) {
+    return hasAnyText(entry, ['date', 'location', 'degree', 'institution', 'details']);
+  }
+
+  function hasExperienceContent(entry) {
+    return hasAnyText(entry, ['title', 'company', 'period', 'location', 'website', 'summary', 'description', 'business_sector', 'department'])
+      || asArray(entry.highlights).some(item => Boolean(asText(item)))
+      || asArray(entry.projects).some(project => hasAnyText(project, ['title', 'description']));
+  }
+
+  function hasProjectContent(entry) {
+    return hasAnyText(entry, ['period', 'title', 'subtitle', 'description', 'link']);
+  }
+
+  function hasCertificationContent(entry) {
+    return hasAnyText(entry, ['type', 'title', 'detail']);
+  }
+
+  function hasLanguageContent(entry) {
+    return hasAnyText(entry, ['name', 'listening', 'reading', 'speaking_production', 'speaking_interaction', 'writing']);
+  }
+
+  function hasLanguagesContent(languages) {
+    return Boolean(asText(languages?.mother)) || (Array.isArray(languages?.other) && languages.other.length > 0);
+  }
+
+  function hasAnyText(entry, fields) {
+    return fields.some(field => Boolean(asText(entry?.[field])));
+  }
+
+  function normalizeSkills(value) {
+    let groups = [];
+
+    if (Array.isArray(value)) {
+      groups = value.map(item => {
+        if (typeof item === 'string') {
+          return { label: 'Skills', items: asList(item) };
+        }
+
+        return {
+          label: item?.label || 'Skills',
+          items: asList(item?.items || item?.value || '')
+        };
+      }).filter(item => item.items.length);
+    } else if (value && typeof value === 'object') {
+      groups = Object.entries(value).map(([label, items]) => ({ label, items: asList(items) }));
+    } else if (typeof value === 'string' && value.trim()) {
+      groups = [{ label: 'Skills', items: asList(value) }];
+    }
+
+    return groupSkillBlocks(groups);
+  }
+
+  function groupSkillBlocks(groups) {
+    const cleaned = groups
+      .map(group => ({
+        label: String(group.label || 'Skills').trim() || 'Skills',
+        items: uniqueList(asList(group.items))
+      }))
+      .filter(group => group.items.length);
+
+    if (!cleaned.length) return [];
+
+    const genericLabels = ['skill', 'skills', 'key skills', 'core skills'];
+    const allGeneric = cleaned.every(group => genericLabels.includes(normalizeLabelKey(group.label)));
+
+    if (allGeneric) {
+      const allItems = uniqueList(cleaned.flatMap(group => group.items));
+      const professional = [];
+      const soft = [];
+
+      allItems.forEach(item => {
+        if (isSoftSkill(item)) {
+          soft.push(item);
+        } else {
+          professional.push(item);
+        }
+      });
+
+      const result = [];
+      if (professional.length) result.push({ label: 'Professional', items: professional });
+      if (soft.length) result.push({ label: 'Soft skills', items: soft });
+
+      return result.length ? result : [{ label: 'Skills', items: allItems }];
+    }
+
+    const merged = new Map();
+    cleaned.forEach(group => {
+      const key = normalizeLabelKey(group.label);
+      if (!merged.has(key)) {
+        merged.set(key, { label: group.label, items: [] });
+      }
+
+      merged.get(key).items = uniqueList([...merged.get(key).items, ...group.items]);
+    });
+
+    return Array.from(merged.values());
+  }
+
+  function normalizeLabelKey(label) {
+    return String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
+  function uniqueList(items) {
+    const seen = new Set();
+    const result = [];
+
+    items.forEach(item => {
+      const value = String(item || '').trim();
+      const key = value.toLowerCase();
+      if (!value || seen.has(key)) return;
+      seen.add(key);
+      result.push(value);
+    });
+
+    return result;
+  }
+
+  function isSoftSkill(skill) {
+    const value = String(skill || '').toLowerCase();
+    const softPatterns = [
+      'communication',
+      'leadership',
+      'management',
+      'teamwork',
+      'problem solving',
+      'conflict resolution',
+      'adaptability',
+      'time management',
+      'ownership',
+      'collaboration',
+      'organization',
+      'organisation',
+      'critical thinking',
+      'decision making',
+      'attention to detail',
+      'creativity',
+      'proactive'
+    ];
+
+    return softPatterns.some(pattern => value.includes(pattern));
+  }
+
+  function normalizeInterests(value) {
+    if (Array.isArray(value)) {
+      return value.map(item => {
+        if (typeof item === 'string') {
+          return { title: '', description: item };
+        }
+
+        return {
+          title: item?.title || item?.label || '',
+          description: item?.description || item?.detail || ''
+        };
+      }).filter(item => item.title || item.description);
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      return [{ title: 'Interests', description: value.trim() }];
+    }
+
+    return [];
+  }
+
+  function setText(id, value) {
+    const element = document.getElementById(id);
+    if (element) element.textContent = value;
+  }
+
+  function setHtml(id, value) {
+    const element = document.getElementById(id);
+    if (element) element.innerHTML = value;
+  }
+
+  function toggleSection(id, visible) {
+    const element = document.getElementById(id);
+    if (element) element.style.display = visible ? '' : 'none';
+  }
+
+  function toggleElement(selector, visible) {
+    const element = document.querySelector(selector);
+    if (element) element.style.display = visible ? '' : 'none';
+  }
+
+  function asArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function asList(value) {
+    if (Array.isArray(value)) {
+      return value.map(item => asText(item)).filter(Boolean);
+    }
+
+    return asText(value)
+      .split(/\s*(?:,|;|\||\u00b7|\u2022)\s*|\n+/)
+      .map(item => item.trim())
+      .filter(Boolean);
+  }
+
+  function asText(value) {
+    if (value === undefined || value === null) return '';
+    if (Array.isArray(value)) return value.map(asText).filter(Boolean).join('\n');
+    if (typeof value === 'object') return JSON.stringify(value);
+    return String(value).trim();
+  }
+
+  function createParagraphs(text) {
+    const content = asText(text);
+    if (!content) return '';
+
+    return content
+      .split(/\n{2,}/)
+      .map(paragraph => `<p>${escapeLines(paragraph.trim())}</p>`)
+      .join('');
+  }
+
+  function escapeLines(value) {
+    return escapeHtml(value).replace(/\n/g, '<br/>');
+  }
+
+  function safeUrl(url) {
+    if (!url) return '';
+
+    try {
+      const parsed = new URL(url, window.location.href);
+      return ['http:', 'https:', 'mailto:'].includes(parsed.protocol) ? parsed.href : '';
+    } catch (error) {
+      return '';
+    }
+  }
+
+  function escapeHtml(value) {
+    if (value === undefined || value === null) return '';
+    return String(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+})();
+</script>
+
+</body>
+</html>
