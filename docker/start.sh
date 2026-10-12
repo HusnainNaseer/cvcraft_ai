@@ -3,7 +3,7 @@
 set -e
 
 if [ -z "$APP_KEY" ]; then
-    echo "APP_KEY is not set. Add it under Settings > Variables and secrets of the Space." >&2
+    echo "APP_KEY is not set. Add it to the host's environment variables (e.g. Render > Environment)." >&2
     exit 1
 fi
 
@@ -19,4 +19,5 @@ php artisan migrate --force
 # Daily cleanup of old tailored CVs (cv:prune).
 php artisan schedule:work > /dev/null 2>&1 &
 
-exec php artisan serve --host=0.0.0.0 --port=7860
+# Render assigns $PORT; Hugging Face Spaces expects 7860.
+exec php artisan serve --host=0.0.0.0 --port="${PORT:-7860}"

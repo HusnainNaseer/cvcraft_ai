@@ -1,0 +1,23 @@
+# Render Blueprint: free Docker web service. Values marked sync: false are asked for when you create it.
+services:
+  - type: web
+    name: cvcraft-ai
+    runtime: docker
+    plan: free
+    healthCheckPath: /up
+    envVars:
+      - key: APP_KEY
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: GEMINI_API_KEYS
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      # The free plan has 512 MB of memory; fewer PHP workers leave room for Chromium.
+      - key: PHP_CLI_SERVER_WORKERS
+        value: "2"
