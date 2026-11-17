@@ -112,8 +112,9 @@ class RequirementMatchTest extends TestCase
         $record = app(TailoredCvRepository::class)->find($response->json('data.result'));
         $this->assertStringStartsWith("Confirmed by the candidate for this application:\n- Night shift availability\n- Full-time availability", $record['source']);
         // Confirmed items survive the fact guard; an unconfirmed claim the CV does not support does not.
-        $this->assertSame('Key skills for this role', $record['cv']['skills'][0]['label']);
-        $this->assertSame(['Night shift availability', 'Full-time availability'], $record['cv']['skills'][0]['items']);
+        // Availability is not a skill: it gets its own short group.
+        $this->assertSame('Availability', $record['cv']['skills'][0]['label']);
+        $this->assertSame(['Night shift', 'Full-time'], $record['cv']['skills'][0]['items']);
         // The repair round made the summary and the experience reflect the requirements.
         $this->assertStringContainsString('night shifts', $record['cv']['about']);
         $this->assertSame(['Answered customer and client questions with project managers.'], $record['cv']['experience'][0]['highlights']);

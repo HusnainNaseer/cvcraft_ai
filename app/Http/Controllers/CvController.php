@@ -80,7 +80,9 @@ class CvController extends Controller
                 Str::length($cvText) < 30 ? $filePart : null
             );
             if ($match['source'] === 'ai') {
-                $autoAdded = array_values(array_diff($match['missing'], $confirmed));
+                // Qualifications (degrees, schooling) are never added: an equal or higher one in the CV already counts.
+                $addable = array_column(array_filter($match['requirements'], fn ($r) => ! $r['met'] && ($r['type'] ?? '') !== 'qualification'), 'name');
+                $autoAdded = array_values(array_diff($addable, $confirmed));
                 $confirmed = [...$confirmed, ...$autoAdded];
             }
         }

@@ -130,7 +130,8 @@ class GeminiService
 
         // Every requirement the candidate confirmed, or that fill-gaps added, must show up under every heading.
         $fit = $this->normalizeFit($parsed['fit'] ?? null);
-        $cv = $this->ensureCoverage($cv, $confirmed, $jobDescription, $fillGaps || $fit['level'] === 'weak', $added, $fit['target_role']);
+        $cv = $this->ensureCoverage($cv, $confirmed, $jobDescription, $fillGaps || $fit['level'] === 'weak', $added, $fit['target_role'], $fillGaps);
+        $cv = $this->dropLowerQualifications($cv);
 
         if ($fillGaps) {
             // Do not depend on the AI listing its additions: every skill, project, certificate, language and
@@ -187,7 +188,7 @@ class GeminiService
      * @param  string[]  $items  requirements to cover (confirmed by the candidate or added from the job)
      * @param  string[]  $added  receives lines the repair rounds add
      */
-    private function ensureCoverage(array $cv, array $items, string $jobDescription, bool $requireExperience, array &$added, string $targetRole = ''): array
+    private function ensureCoverage(array $cv, array $items, string $jobDescription, bool $requireExperience, array &$added, string $targetRole = '', bool $fillEverySection = false): array
     {
         if ($items === []) {
             return $cv;
@@ -196,7 +197,7 @@ class GeminiService
         $cv = $this->ensureKeySkills($cv, $items);
 
         for ($round = 1; $round <= 2; $round++) {
-            $gaps = $this->coverageGaps($cv, $items, $requireExperience, $targetRole);
+            $gaps = $this->coverageGaps($cv, $items, $requireExperience, $targetRole, $fillEverySection);
             if ($gaps === []) {
                 return $cv;
             }
@@ -251,6 +252,35 @@ class GeminiService
     }
 
     /**
+     * A graduate's CV must not claim "Middle School completed" because a job asked for middle school.
+     */
+    private function dropLowerQualifications(array $cv): array
+    {
+        $degrees = implode(' ', array_map(fn ($entry) => (string) ($entry['degree'] ?? ''), (array) ($cv['education'] ?? [])));
+        if (! preg_match('/bachelor|master|b\.?\s?sc|m\.?\s?sc|\bbs\b|\bms\b|\bba\b|\bma\b|b\.?com|mba|phd|degree|diploma|intermediate|f\.?sc/i', $degrees)) {
+            return $cv;
+        }
+
+        $lower = '/[^.]*\b(middle school|primary school|elementary school|matric(ulation)?)\b[^.]*\.?\s*/i';
+        foreach ((array) ($cv['education'] ?? []) as $index => $entry) {
+            if (preg_match('/^\s*(middle|primary|elementary) school\b/i', (string) ($entry['degree'] ?? ''))) {
+                unset($cv['education'][$index]);
+
+                continue;
+            }
+            $cv['education'][$index]['details'] = trim(preg_replace($lower, '', (string) ($entry['details'] ?? '')) ?? '');
+        }
+        $cv['education'] = array_values($cv['education'] ?? []);
+        $cv['about'] = trim(preg_replace($lower, '', (string) ($cv['about'] ?? '')) ?? '');
+        foreach ((array) ($cv['skills'] ?? []) as $index => $group) {
+            $cv['skills'][$index]['items'] = array_values(array_filter((array) ($group['items'] ?? []), fn ($item) => ! preg_match('/middle school|primary school|matric/i', (string) $item)));
+        }
+        $cv['skills'] = array_values(array_filter($cv['skills'] ?? [], fn ($group) => ! empty($group['items'])));
+
+        return $cv;
+    }
+
+    /**
      * "Key skills for this role" comes first and lists every requirement.
      */
     private function ensureKeySkills(array $cv, array $items): array
@@ -265,15 +295,45 @@ class GeminiService
             }
         }
 
-        $merged = [];
-        foreach ([...$items, ...$existing] as $item) {
-            $item = trim((string) $item);
-            if ($item !== '' && ! in_array(mb_strtolower($item), array_map('mb_strtolower', $merged), true)) {
-                $merged[] = $item;
+        // Availability and location are not skills: they get their own short group ("Night shift", "Full-time").
+        $availabilityPattern = '/availab|shift|commut|relocat|full[- ]?time|part[- ]?time|immediate|notice period|weekend|willing to travel|based in|start date/i';
+        $availability = [];
+        foreach ($groups as $index => $group) {
+            if (is_array($group) && strcasecmp(trim((string) ($group['label'] ?? '')), 'Availability') === 0) {
+                $availability = (array) ($group['items'] ?? []);
+                unset($groups[$index]);
             }
         }
 
-        $cv['skills'] = [['label' => $label, 'items' => $merged], ...array_values($groups)];
+        $merged = [];
+        foreach ([...$items, ...$existing, ...$availability] as $item) {
+            $item = trim((string) $item);
+            $isAvailability = preg_match($availabilityPattern, $item) === 1;
+            if ($isAvailability) {
+                $item = trim(preg_replace('/\s*\bavailability\b\s*/i', ' ', $item) ?? $item);
+                $item = mb_strtoupper(mb_substr($item, 0, 1)).mb_substr($item, 1);
+            }
+            $bucket = $isAvailability ? 'availability' : 'skills';
+            $duplicate = false;
+            foreach ($merged[$bucket] ?? [] as $kept) {
+                if (mb_strtolower($kept) === mb_strtolower($item) || $this->mentions($kept, $item) || $this->mentions($item, $kept)) {
+                    $duplicate = true;
+                    break;
+                }
+            }
+            if ($item !== '' && ! $duplicate) {
+                $merged[$bucket][] = $item;
+            }
+        }
+
+        $front = [];
+        if (! empty($merged['skills'])) {
+            $front[] = ['label' => $label, 'items' => $merged['skills']];
+        }
+        if (! empty($merged['availability'])) {
+            $front[] = ['label' => 'Availability', 'items' => $merged['availability']];
+        }
+        $cv['skills'] = [...$front, ...array_values($groups)];
 
         return $cv;
     }
@@ -283,7 +343,7 @@ class GeminiService
      *
      * @return string[]
      */
-    private function coverageGaps(array $cv, array $items, bool $requireExperience, string $targetRole = ''): array
+    private function coverageGaps(array $cv, array $items, bool $requireExperience, string $targetRole = '', bool $fillEverySection = false): array
     {
         $headline = (string) ($cv['personal']['headline'] ?? '');
         $about = (string) ($cv['about'] ?? '');
@@ -298,6 +358,17 @@ class GeminiService
         $gaps = [];
         if (count(array_intersect($covered($headline), $important)) === 0) {
             $gaps[] = 'headline: must name at least one of: '.implode('; ', $important);
+        }
+        // Requirement labels pasted in word for word ("Night shift availability, Commute to Rawalpindi") read badly.
+        $pasted = array_filter($items, fn (string $item) => str_contains($about, $item) || str_contains($headline, $item));
+        if (count($pasted) >= 2) {
+            $gaps[] = 'about and headline: the requirements are pasted as labels ('.implode('; ', $pasted).'); write them naturally';
+        }
+        if ($fillEverySection && empty($cv['interests'])) {
+            $gaps[] = 'interests: empty; write one short line of interests that fit this job';
+        }
+        if ($fillEverySection && trim((string) ($cv['hobbies'] ?? '')) === '') {
+            $gaps[] = 'hobbies: empty; write one short line of hobbies that fit this job';
         }
         $aboutMissing = array_values(array_diff($items, $covered($about)));
         if (count($aboutMissing) > max(1, intdiv(count($items), 3))) {
@@ -361,11 +432,12 @@ Fix these problems:
 {$gapList}
 
 Rules:
-- headline: one line (max 110 characters) aimed at the target job that names the most important requirements.
-- about: 3-4 sentences written for this job that mention every requirement naturally.
+- headline: one line (max 110 characters) aimed at the target job that names the most important requirements in natural words.
+- about: 3-4 fluent sentences a recruiter would enjoy reading, written for this job, mentioning every requirement naturally (e.g. "available for full-time night shifts and able to commute to Rawalpindi"). Never paste requirements as a capitalised list.
+- interests / hobbies (only when asked to fix them): one short natural line that fits the job.
 - experience: keep every existing highlight; if a role has no highlight related to the job, add ONE short highlight showing related work in that role (communication, clients, customers, teamwork, reliability) without new numbers, dates, employers or job titles.
 - Never invent employers, job titles, dates, degrees, certifications or numbers.
-Return ONLY JSON: {"headline": "...", "about": "...", "experience": [["highlight", "..."], ...one array per role in the same order...]}
+Return ONLY JSON: {"headline": "...", "about": "...", "experience": [["highlight", "..."], ...one array per role in the same order...], "interests": "...", "hobbies": "..."}
 
 REQUIREMENTS:
 {$itemList}
@@ -387,6 +459,20 @@ PROMPT;
         $about = $this->textValue($revised['about'] ?? '');
         if ($about !== '') {
             $cv['about'] = $about;
+        }
+
+        foreach (['interests', 'hobbies'] as $field) {
+            $value = $this->textValue($revised[$field] ?? '');
+            if ($value === '') {
+                continue;
+            }
+            if ($field === 'interests' && empty($cv['interests'])) {
+                $cv['interests'] = [['title' => '', 'description' => $value]];
+                $added[] = $value;
+            } elseif ($field === 'hobbies' && trim((string) ($cv['hobbies'] ?? '')) === '') {
+                $cv['hobbies'] = $value;
+                $added[] = $value;
+            }
         }
 
         foreach ((array) ($revised['experience'] ?? []) as $index => $highlights) {
@@ -1025,18 +1111,21 @@ JOB-FIRST MODE IS ON. The candidate wants the CV built around this job. Where it
 - FILL EVERY SECTION of the template; never leave one empty. Rewrite every section for this job:
   - personal.headline and "about": written for the target job.
   - experience: keep every role, employer, title and date; rewrite each role's summary and highlights for this job (2-4 highlights per role).
-  - education: keep every entry; in "details" mention what is relevant to this job.
-  - projects: if the CV has none relevant, add 1-2 short job-relevant activities (e.g. volunteering, a personal or university project) with no dates or numbers.
+  - education: keep every entry and keep its grade, CGPA, honours and status (e.g. "CGPA: 3.68 / 4.0, currently in 7th semester") exactly; you may add one short job-relevant note after them.
+  - projects: KEEP EVERY project, startup, competition and pitch from the CV (same title, e.g. a Hult Prize entry), count them before you answer, and rewrite each description for this job; only if the CV has no projects at all, add 1-2 short job-relevant activities (e.g. volunteering, a university project) with no dates or numbers.
   - skills: "Key skills for this role" first, then the job's tools and soft skills, then any background skills.
   - languages: keep the CV's languages; add the language the job needs if missing, with a level only if the CV gives one.
-  - certifications: if the CV has none relevant, add 1-2 well-known courses that fit this job as SUGGESTIONS: title = course name, type = provider, detail = "Suggested – replace with your own".
-  - interests and hobbies: one short line each that fits the job.
+  - certifications: KEEP EVERY certificate from the CV; if none fits this job, ADD 1-2 well-known courses that fit it as SUGGESTIONS: title = course name, type = provider, detail = "Suggested – replace with your own".
+  - Never drop a real item from education, projects, certifications or languages: rewrite, reorder, but keep.
+  - interests and hobbies: one short line each that fits the job (both must be filled).
+  - An education requirement is met by any equal or higher qualification: never add a lower one (e.g. never "Middle School completed" for a graduate).
+  - Write requirements into fluent sentences; never paste them as a capitalised list.
 - Never invent employers, job titles, dates, degrees, grades, links, or any number, percentage or metric.
 - List EVERY sentence, highlight, skill or item you added that the uploaded CV does not state in "added", copied exactly as it appears in the cv JSON. The candidate reviews this list and can change anything with Edit.
 RULE;
         $confirmedRule = $confirmed === [] ? '' : "\n\nCANDIDATE CONFIRMED (the candidate states these are true for them; treat them as facts from the CV):\n- "
             .implode("\n- ", $confirmed)
-            ."\nEvery confirmed item must appear in the tailored CV: in the headline or about section when it matters most for this job, and in a skills group labelled \"Key skills for this role\". Word each one exactly as confirmed, without adding employers, dates or numbers the candidate did not give. Confirmed items count as CV evidence when you judge the fit.";
+            ."\nEvery confirmed item must appear in the tailored CV: in the headline or about section when it matters most for this job, and in a skills group labelled \"Key skills for this role\". Write each one naturally inside sentences (e.g. \"available for full-time night shifts and able to commute to Rawalpindi\"), never as a pasted list of capitalised labels, and without adding employers, dates or numbers the candidate did not give. An education requirement is met by any equal or higher qualification: never add a lower one (e.g. never \"Middle School completed\" for a graduate). Confirmed items count as CV evidence when you judge the fit.";
 
         return <<<PROMPT
 You are tailoring a candidate's CV for a job. Tailoring means SELECTING, ORDERING, REWORDING and EMPHASISING what the CV already says so the most relevant facts stand out. It never means adding anything.

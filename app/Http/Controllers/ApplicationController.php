@@ -12,6 +12,7 @@ use App\Services\TailoredCvRepository;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * Applies for the job with the tailored CV, using the application method the job asks for.
@@ -136,11 +137,16 @@ class ApplicationController extends Controller
         $company = ($job['company'] ?? '') ? ' at '.$job['company'] : '';
         $contact = implode("\n", array_filter([$name, data_get($cv, 'personal.phone'), data_get($cv, 'personal.email')]));
 
+        // Used when the AI is unavailable: built from the tailored CV's own summary so it is still specific.
+        $about = trim((string) ($cv['about'] ?? ''));
+        $summary = $about !== ''
+            ? 'A little about me: '.lcfirst(Str::limit($about, 420))
+            : 'My experience and skills match the requirements of the role, and I would welcome the chance to contribute to your team.';
+
         return [
             'subject' => trim('Application for '.$title.($name ? ' - '.$name : '')),
-            'body' => "Dear Hiring Manager,\n\nI am writing to apply for {$title}{$company}. "
-                ."My experience and skills match the requirements of the role, and I would welcome the chance to contribute to your team.\n\n"
-                ."Please find my CV attached. I look forward to hearing from you.\n\nKind regards,\n{$contact}",
+            'body' => "Dear Hiring Manager,\n\nI am writing to apply for {$title}{$company}.\n\n{$summary}\n\n"
+                ."Please find my CV attached. I would welcome the chance to discuss how I can contribute to your team.\n\nKind regards,\n{$contact}",
         ];
     }
 }
