@@ -802,6 +802,9 @@ html.light .preview-bar{
 textarea.mef-input{min-height:190px;resize:vertical;line-height:1.5;font-family:inherit}
 .sender-line{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:.72rem;color:var(--text3);margin:2px 0 12px}
 .sender-line strong{color:var(--text2)}
+.send-error{display:flex;gap:8px;align-items:flex-start;margin-top:10px;padding:10px 12px;border-radius:8px;background:var(--red-dim);border:1px solid var(--red);color:var(--text);font-size:.74rem;line-height:1.45}
+.send-error[hidden]{display:none}
+.send-error i{color:var(--red);margin-top:2px;flex-shrink:0}
 .link-btn{background:none;border:none;padding:0;color:var(--brand);font-size:.72rem;font-weight:600;cursor:pointer}
 .btn-send:disabled{opacity:.55;cursor:not-allowed;transform:none;box-shadow:none}
 .mef-input::placeholder{color:var(--text3)}
@@ -919,6 +922,7 @@ textarea.mef-input{min-height:190px;resize:vertical;line-height:1.5;font-family:
             <textarea class="mef-input" id="emailBody" maxlength="5000"></textarea>
             <div class="sender-line" id="senderLine"></div>
             <button class="btn-send" id="btnSendEmail" onclick="sendApplicationEmail()"><i class="fas fa-paper-plane"></i> &nbsp;Send Application</button>
+            <div class="send-error" id="sendError" role="alert" hidden><i class="fas fa-circle-exclamation"></i><span id="sendErrorText"></span></div>
           </div>
         </div>
       </div>
@@ -1316,14 +1320,15 @@ function toggleTheme() {
 })();
 
 /*  Toast  */
-function toast(type, msg) {
+function toast(type, msg, duration = 3200) {
   const icons = { success:'fa-check-circle', error:'fa-times-circle', info:'fa-info-circle', warn:'fa-triangle-exclamation' };
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.innerHTML = `<i class="fas ${icons[type]} toast-icon"></i><span class="toast-msg"></span><div class="toast-prog"></div>`;
   el.querySelector('.toast-msg').textContent = msg;
+  el.querySelector('.toast-prog').style.animationDuration = `${duration}ms`;
   document.getElementById('toastStack').prepend(el);
-  setTimeout(()=>{el.classList.add('out');setTimeout(()=>el.remove(),300)},3200);
+  setTimeout(()=>{el.classList.add('out');setTimeout(()=>el.remove(),300)},duration);
 }
 
 /*  Gmail connection  */
@@ -1770,7 +1775,7 @@ async function tailorCvWithGemini(btn, steps) {
     ['btnDownload','btnShare','btnApply'].forEach(id=>document.getElementById(id).disabled=false);
     showPhotoTool();
     showMatchScore(S.matchScore ?? 0, S.matchedSkills, S.missingSkills, 'Tailored CV Match Score');
-    toast('success', 'CV tailored with AI! Download available.');
+    showFactCheck(result.data.factCheck);
 
   } catch (error) {
     // Mark last step as failed
@@ -2006,6 +2011,7 @@ async function openModal() {
 
   document.getElementById('applyModal').classList.add('show');
   if (S.applyPrepared?.result === S.tailoredResult && S.applyRendered) return;
+  showSendError('');
 
   document.getElementById('applyLoading').style.display = '';
   document.getElementById('applyCards').style.display = 'none';
@@ -2111,17 +2117,41 @@ async function sendApplicationEmail() {
   const original = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> &nbsp;Sending...';
+  showSendError('');
 
   try {
     const data = await postJson(APPLICATION_EMAIL_URL, { result: S.tailoredResult, to, subject, body });
     closeModal();
     toast('success', data.message);
   } catch (error) {
-    toast('error', error.message || 'The application email could not be sent.');
+    // Keep the reason on screen next to the button; a toast disappears before it can be read.
+    showSendError(error.message || 'The application email could not be sent.');
   } finally {
     btn.innerHTML = original;
     renderSenderLine();
   }
+}
+
+/**
+ * Tell the user what the fact check did: every claim the AI added that is not in their CV was removed.
+ */
+function showFactCheck(factCheck) {
+  const removed = factCheck?.removed || [];
+  if (removed.length) console.info('[CVCraft] Fact check removed or reworded:', removed);
+
+  if (!factCheck?.verified) {
+    toast('warn', 'CV tailored, but the fact check could not finish. Read it carefully before sending.', 8000);
+  } else if (removed.length) {
+    toast('success', `CV tailored. Fact check removed ${removed.length} detail${removed.length === 1 ? '' : 's'} that ${removed.length === 1 ? 'is' : 'are'} not in your original CV.`, 6000);
+  } else {
+    toast('success', 'CV tailored and fact-checked against your original CV.');
+  }
+}
+
+function showSendError(message) {
+  const box = document.getElementById('sendError');
+  document.getElementById('sendErrorText').textContent = message;
+  box.hidden = !message;
 }
 
 async function applyViaLink() {

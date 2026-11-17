@@ -21,7 +21,10 @@ class GeminiService
 
     private string $thinkingLevel;
 
-    public function __construct()
+    /** Below this much source text the CV cannot be fact-checked reliably. */
+    private const MIN_SOURCE_FOR_CHECKS = 150;
+
+    public function __construct(private readonly CvFactGuard $guard = new CvFactGuard())
     {
         $this->apiKeys = $this->csvList([
             config('services.gemini.api_key'),
@@ -38,7 +41,11 @@ class GeminiService
     }
 
     /**
-     * Convert the uploaded CV into the template schema and tailor it for the job.
+     * Convert the uploaded CV into the template schema, tailor it for the job, and fact-check the result
+     * against the original CV: first with deterministic checks (CvFactGuard), then with an AI review of the
+     * free-text sentences.
+     *
+     * @return array{cv: array, reasoning: string, source: string, factCheck: array{verified: bool, removed: string[]}}
      *
      * @throws GeminiException
      */
@@ -49,13 +56,17 @@ class GeminiService
         string $tone = 'professional',
         ?array $uploadedFile = null
     ): array {
+        // Our own PDF text extraction can be incomplete, so ask the model for a transcription to check against too.
+        $wantsTranscript = ($uploadedFile['mime_type'] ?? '') === 'application/pdf';
+
         $parts = [[
             'text' => $this->buildUploadedCvPrompt(
                 $jobDescription,
                 $uploadedCvText,
                 $this->emptySchemaFromTemplate($layoutTemplate),
                 $tone,
-                $uploadedFile
+                $uploadedFile,
+                $wantsTranscript
             ),
         ]];
 
@@ -75,10 +86,121 @@ class GeminiService
             throw new GeminiException('The AI response did not include a valid CV.');
         }
 
+        $transcript = $wantsTranscript && is_string($parsed['source_text'] ?? null) ? $parsed['source_text'] : '';
+        $source = trim($uploadedCvText."\n".$transcript);
+        $cv = $this->normalizeGeneratedCv($candidate, $layoutTemplate);
+
         return [
-            'cv' => $this->normalizeGeneratedCv($candidate, $layoutTemplate),
             'reasoning' => is_string($parsed['reasoning'] ?? null) ? $parsed['reasoning'] : '',
+            'source' => $source,
+            ...$this->factCheck($cv, $source, $jobDescription),
         ];
+    }
+
+    /**
+     * @return array{cv: array, factCheck: array{verified: bool, removed: string[]}}
+     */
+    private function factCheck(array $cv, string $source, string $jobDescription): array
+    {
+        if (mb_strlen($source) < self::MIN_SOURCE_FOR_CHECKS) {
+            Log::warning('CV fact check skipped: not enough source text');
+
+            return ['cv' => $cv, 'factCheck' => ['verified' => false, 'removed' => []]];
+        }
+
+        $guarded = $this->guard->enforce($cv, $source);
+        $cv = $guarded['cv'];
+        $removed = $guarded['removed'];
+
+        try {
+            $review = $this->verifyClaims($this->guard->claims($cv), $source, $jobDescription);
+            $checked = $this->guard->applyVerdicts($cv, $review['verdicts'], $source);
+            $cv = $checked['cv'];
+            $removed = [...$removed, ...$checked['removed']];
+            $verified = $review['complete'];
+        } catch (GeminiException $e) {
+            Log::warning('CV fact check by AI failed; deterministic checks only', ['error' => $e->getMessage()]);
+            $verified = false;
+        }
+
+        if ($removed !== []) {
+            Log::info('CV fact check corrected the tailored CV', ['changes' => count($removed)]);
+        }
+
+        return ['cv' => $cv, 'factCheck' => ['verified' => $verified, 'removed' => array_values(array_unique($removed))]];
+    }
+
+    /**
+     * Ask the model to check rewritten CV text against the original CV.
+     *
+     * @param  array<string, string>  $claims  text keyed by an id (a CV path)
+     * @return array{verdicts: array<string, array{verdict: string, text: string}>, complete: bool}
+     *
+     * @throws GeminiException
+     */
+    public function verifyClaims(array $claims, string $source, string $jobDescription = ''): array
+    {
+        if ($claims === []) {
+            return ['verdicts' => [], 'complete' => true];
+        }
+
+        // Short ids keep the model from mangling paths; map them back afterwards.
+        $ids = [];
+        $numbered = [];
+        foreach (array_keys($claims) as $i => $path) {
+            $ids['c'.($i + 1)] = $path;
+            $numbered['c'.($i + 1)] = $claims[$path];
+        }
+
+        $claimsJson = json_encode($numbered, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $source = Str::limit($source, 16000, '');
+        $jobDescription = Str::limit($jobDescription, 6000, '');
+
+        $prompt = <<<PROMPT
+You are a strict fact-checker. An AI rewrote parts of a candidate's CV to target a job. The ORIGINAL CV is the only source of truth about the candidate. Check every CLAIM against it.
+
+Verdicts:
+- "keep": every fact in the claim is stated in, or directly follows from, the ORIGINAL CV. Rewording, reordering, shortening, summarising and synonyms are fine.
+- "fix": the claim is mostly supported but adds something the ORIGINAL CV does not state, for example a technology, responsibility, seniority or leadership ("led", "senior", "managed", "mentored", "architected"), scale ("scalable", "high-traffic", "enterprise"), domain or product type ("SaaS", "fintech"), client type, team size, number, metric or outcome. Put the corrected claim in "text": remove only the unsupported parts, keep the remaining wording, and add nothing new.
+- "remove": the main point of the claim is not supported by the ORIGINAL CV.
+
+Be strict. Wording that comes from the JOB DESCRIPTION but is not backed by the ORIGINAL CV is unsupported. A job title or degree name is supported only if the ORIGINAL CV gives it (small wording differences are fine).
+
+Return ONLY JSON:
+{"results": [{"id": "c1", "verdict": "keep", "text": "", "reason": "short reason"}]}
+Include every claim id exactly once. "text" is required only for "fix".
+
+ORIGINAL CV:
+{$source}
+
+JOB DESCRIPTION (only to spot copied wording; it is NOT evidence about the candidate):
+{$jobDescription}
+
+CLAIMS:
+{$claimsJson}
+PROMPT;
+
+        // A healthy check takes 10-20s; give up sooner on a hung model so the fallback model gets its turn.
+        $response = $this->generateJson([['text' => $prompt]], 35);
+        $results = $response['results'] ?? null;
+        if (! is_array($results)) {
+            throw new GeminiException('The fact checker returned no results.');
+        }
+
+        $verdicts = [];
+        foreach ($results as $result) {
+            $id = is_array($result) ? (string) ($result['id'] ?? '') : '';
+            $verdict = is_array($result) ? strtolower(trim((string) ($result['verdict'] ?? ''))) : '';
+            if (! isset($ids[$id]) || ! in_array($verdict, ['keep', 'fix', 'remove'], true)) {
+                continue;
+            }
+
+            $text = trim((string) ($result['text'] ?? ''));
+            // A "fix" without corrected text cannot be applied safely, so treat it as unsupported.
+            $verdicts[$ids[$id]] = ['verdict' => $verdict === 'fix' && $text === '' ? 'remove' : $verdict, 'text' => $text];
+        }
+
+        return ['verdicts' => $verdicts, 'complete' => count($verdicts) === count($ids)];
     }
 
     /**
@@ -123,26 +245,26 @@ PROMPT;
     }
 
     /**
-     * Write a short application email (cover note) from the tailored CV.
+     * Write a short application email (cover note) from the candidate's ORIGINAL CV, then fact-check every
+     * paragraph about the candidate. Throws when the draft cannot be verified, so callers fall back to a
+     * plain template rather than send unchecked claims.
+     *
+     * @param  string  $source  text of the original uploaded CV ('' for old results; the tailored CV is used then)
      *
      * @throws GeminiException
      */
-    public function draftApplicationEmail(array $cv, array $job, string $tone = 'professional'): array
+    public function draftApplicationEmail(array $cv, array $job, string $tone = 'professional', string $source = ''): array
     {
-        $candidate = json_encode([
+        $facts = $source !== '' ? $source : $this->cvAsText($cv);
+        $contact = json_encode([
             'name' => data_get($cv, 'personal.name'),
             'email' => data_get($cv, 'personal.email'),
             'phone' => data_get($cv, 'personal.phone'),
-            'about' => $cv['about'] ?? '',
-            'experience' => array_map(
-                fn ($entry) => array_intersect_key((array) $entry, array_flip(['title', 'company', 'period', 'summary'])),
-                array_slice($cv['experience'] ?? [], 0, 4)
-            ),
-            'skills' => $cv['skills'] ?? [],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $jobTitle = $job['title'] ?: 'the advertised role';
         $company = $job['company'] ?: 'the company';
         $jobDescription = Str::limit((string) ($job['description'] ?? ''), 6000, '');
+        $candidateCv = Str::limit($facts, 12000, '');
 
         $prompt = <<<PROMPT
 Write a job application email from the candidate below. Return ONLY JSON:
@@ -151,10 +273,13 @@ Write a job application email from the candidate below. Return ONLY JSON:
 Rules:
 - Subject: "Application for {$jobTitle} - <candidate name>" unless the job description asks for a specific subject line or reference code; then follow it exactly.
 - Body: plain text, 120-180 words, {$tone} tone. Greeting ("Dear Hiring Manager," unless a contact name is given), 2 short paragraphs on why the candidate fits {$jobTitle} at {$company}, one line saying the tailored CV is attached as a PDF, then a sign-off with the candidate's name, phone and email.
-- Use only facts from the candidate data. Do not invent experience, skills, numbers or availability.
+- TRUTH RULE: every statement about the candidate must be stated in the CANDIDATE CV. The job description says what the employer wants; it is NOT evidence about the candidate. Do not describe the candidate with the job's wording (e.g. "SaaS", "scalable", "led") unless the CV says the same. Do not invent experience, seniority, skills, numbers, outcomes or availability. If the CV lacks a required skill, do not mention that skill.
 
-CANDIDATE:
-{$candidate}
+CANDIDATE CONTACT:
+{$contact}
+
+CANDIDATE CV:
+{$candidateCv}
 
 JOB DESCRIPTION:
 {$jobDescription}
@@ -168,7 +293,64 @@ PROMPT;
             throw new GeminiException('The AI did not return an email draft.');
         }
 
-        return ['subject' => $subject, 'body' => $body];
+        return ['subject' => $subject, 'body' => $this->checkedEmailBody($body, $facts, $jobDescription)];
+    }
+
+    /**
+     * Fact-check the paragraphs of an email body that describe the candidate.
+     *
+     * @throws GeminiException when the body cannot be fully verified or nothing truthful is left
+     */
+    private function checkedEmailBody(string $body, string $facts, string $jobDescription): string
+    {
+        $paragraphs = preg_split('/\n\s*\n/', str_replace("\r\n", "\n", $body)) ?: [$body];
+        $claims = [];
+        foreach ($paragraphs as $i => $paragraph) {
+            $paragraph = trim($paragraph);
+            $isGreetingOrSignOff = preg_match('/^(dear|hi|hello|to whom|kind regards|best regards|warm regards|regards|sincerely|yours|thank you|many thanks)\b/i', $paragraph) === 1;
+            if (mb_strlen($paragraph) >= 60 && ! $isGreetingOrSignOff) {
+                $claims["p$i"] = $paragraph;
+            }
+        }
+
+        $review = $this->verifyClaims($claims, $facts, $jobDescription);
+        if (! $review['complete']) {
+            throw new GeminiException('The application email could not be fully fact-checked.');
+        }
+
+        $kept = 0;
+        foreach ($paragraphs as $i => $paragraph) {
+            $verdict = $review['verdicts']["p$i"] ?? null;
+            if ($verdict === null) {
+                continue;
+            }
+
+            $text = match ($verdict['verdict']) {
+                'remove' => '',
+                'fix' => $verdict['text'],
+                default => trim($paragraph),
+            };
+            $paragraphs[$i] = $this->guard->proseWithKnownNumbers($text, $facts);
+            $kept += $paragraphs[$i] !== '' ? 1 : 0;
+        }
+
+        if ($claims !== [] && $kept === 0) {
+            throw new GeminiException('No verifiable content was left in the application email.');
+        }
+
+        return implode("\n\n", array_filter(array_map('trim', $paragraphs), fn ($paragraph) => $paragraph !== ''));
+    }
+
+    private function cvAsText(array $cv): string
+    {
+        $parts = [];
+        array_walk_recursive($cv, function ($value, $key) use (&$parts) {
+            if (is_scalar($value) && $key !== 'photo') {
+                $parts[] = (string) $value;
+            }
+        });
+
+        return implode("\n", $parts);
     }
 
     /**
@@ -296,7 +478,8 @@ PROMPT;
         string $uploadedCvText,
         array $emptySchema,
         string $tone,
-        ?array $uploadedFile = null
+        ?array $uploadedFile = null,
+        bool $wantsTranscript = false
     ): string {
         $schemaJson = json_encode($emptySchema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $fileNote = $uploadedFile
@@ -312,48 +495,50 @@ PROMPT;
         }
         $toneInstructions = $this->toneInstructions($tone);
 
+        $transcriptRule = $wantsTranscript
+            ? "\n- Also return \"source_text\": a faithful plain-text transcription of the ORIGINAL uploaded CV file (not the tailored version). Copy it word for word; do not summarise, reorder or correct it."
+            : '';
+        $transcriptShape = $wantsTranscript ? ",\n  \"source_text\": \"verbatim text of the original CV\"" : '';
+
         return <<<PROMPT
-You are converting a user's uploaded CV into a structured CV JSON object and tailoring it for a job.
+You are tailoring a candidate's CV for a job. Tailoring means SELECTING, ORDERING, REWORDING and EMPHASISING what the CV already says so the most relevant facts stand out. It never means adding anything.
 
-Return ONLY valid JSON. Do not include markdown fences, comments, or explanations outside JSON.
-
-Your response shape must be exactly:
+Return ONLY valid JSON, no markdown fences or comments, in exactly this shape:
 {
-  "cv": { ...full CV JSON using the provided schema... },
-  "reasoning": "Brief summary of how the uploaded CV was tailored"
+  "cv": { ...CV JSON using the provided schema... },
+  "reasoning": "Brief summary of what was emphasised or reordered and why"{$transcriptShape}
 }
 
-Critical rules:
-- The uploaded CV content is the ONLY factual source for the candidate.
-- {$fileNote}
-- The provided JSON is an empty layout schema only. Do not copy sample/default names, dates, companies, schools, emails, skills, or experience from anywhere else.
-- Do not invent employers, dates, degrees, certifications, tools, achievements, metrics, portfolio links, or seniority.
-- If a field is missing from the uploaded CV, leave it blank or use an empty array.
-- Do not create placeholder objects for missing sections. For example, if no other languages are present, use "other": []; if no certifications are present, use "certifications": [].
-- If the uploaded CV includes languages, certifications, projects, driving licence, hobbies, or interests, include those sections in the output even when they are not relevant to the job.
-- Only include a section item when it has real content from the uploaded CV.
-- Keep the template schema: personal object, about string, education array, experience array, projects array, languages object, driving string, interests array, hobbies string, skills array, certifications array.
-- Use these exact keys where possible:
-  - experience: title, company, period, location, website, summary, description, business_sector, department, projects, highlights.
-  - projects: period, title, subtitle, description, link.
-  - skills: label, items.
-  - certifications: type, title, detail.
-  - languages.other: name, listening, reading, speaking_production, speaking_interaction, writing.
-- Skills must be grouped like the template, not one skill per object. Use broad labels such as "Professional", "Technical", "Tools", and "Soft skills"; each group must contain an items array with multiple skills where possible.
-- Optimize the CV for the job description as strongly as possible while staying truthful.
-- Cover as many of the job's required keywords and responsibilities as the CV genuinely supports.
-- Identify the job's required skills, tools, responsibilities, domain keywords, and soft skills.
-- If a required job skill or tool is present anywhere in the uploaded CV, include it in the skills section and relevant experience/project wording.
-- Reorder skills so the job's required skills appear first within the most relevant groups.
-- Rewrite work experience summaries, descriptions, projects, and highlights to emphasize responsibilities and outcomes that match the job description.
-- Write interests as one polished role-matching paragraph, not multiple points. It should support the job target and mention relevant professional interests naturally.
-- Do not add missing skills, tools, achievements, or experience unless they are supported by the uploaded CV text or attached CV file.
-- Prefer direct, recruiter-friendly English.
+THE TRUTH RULE (overrides every other instruction):
+- The uploaded CV is the ONLY source of facts about the candidate. {$fileNote}
+- The job description is a list of what the employer wants. It is NOT evidence about the candidate. Never copy its phrases into the candidate's experience, summary or skills unless the CV states the same fact. Example: if the job says "build our SaaS platform" and the CV says "maintained WordPress sites", do NOT write "SaaS".
+- Never add or upgrade: employers, job titles, seniority or leadership ("led", "senior", "managed", "mentored", "architected", "scaled"), responsibilities, technologies, skills, tools, domains or industries, clients, team sizes, numbers, percentages, metrics, outcomes, dates, degrees, grades, certifications, links, nationality, date of birth, or language levels.
+- Every field you fill must be stated in the CV. If the CV does not state something, leave that field as an empty string or empty array. An empty field is always better than a guessed one. This applies especially to business_sector, department, location, website, link, date_of_birth, nationality and language levels.
+- Only set languages.mother when the CV explicitly says which language is the mother tongue or native language. Otherwise list every language under "other" with empty levels unless the CV gives levels.
+- Keep each job title exactly as the CV gives it.
+- If a skill the job asks for is not in the CV, leave it out. Missing skills are shown to the user separately; your job is not to hide gaps.{$transcriptRule}
+
+HOW TO TAILOR (within the truth rule):
+- Put the experience, projects and skills most relevant to the job first, and use the job's terminology only where it names the same thing the CV does (e.g. CV "REST APIs" may be written as "REST API development").
+- Rewrite summaries and highlights so the relevant facts stand out; you may merge, shorten or split bullet points, but each must still be backed by the CV.
+- The "about" section must summarise only what the CV shows.
+- Group skills like the template ("Technical", "Tools", "Professional", "Soft skills"), each group an items array.
+- Include every section the CV has (languages, certifications, projects, driving licence, hobbies, interests), even when not relevant to the job. Do not create items for sections the CV does not have.
+- Write interests as one short paragraph, only from interests the CV mentions.
+- Do not copy anything from the empty schema's sample values.
+
+SCHEMA KEYS:
+- Top level: personal object, about string, education array, experience array, projects array, languages object, driving string, interests array, hobbies string, skills array, certifications array.
+- experience: title, company, period, location, website, summary, description, business_sector, department, projects, highlights.
+- projects: period, title, subtitle, description, link.
+- skills: label, items.
+- certifications: type, title, detail.
+- languages.other: name, listening, reading, speaking_production, speaking_interaction, writing.
 
 WRITING STYLE PROFILE:
 {$toneInstructions}
 
-JOB DESCRIPTION:
+JOB DESCRIPTION (what the employer wants, NOT facts about the candidate):
 {$jobDescription}
 
 UPLOADED CV TEXT:
@@ -379,16 +564,16 @@ TEXT,
 Style: Detailed.
 - Use a richer about section with clear job alignment.
 - Expand relevant work experience, projects, and highlights with more context.
-- Include more supported job keywords where they naturally fit.
+- Use the job's terminology where the CV describes the same thing.
 - Preserve optional sections such as certifications, languages, interests, and hobbies when present.
-- Make the CV feel complete and specific without inventing facts.
+- Be specific using only details the CV gives; never fill gaps.
 TEXT,
             default => <<<TEXT
 Style: Professional.
 - Use balanced, polished recruiter-friendly language.
 - Keep sections clear, confident, and specific.
 - Emphasize job-matching skills and experience without over-writing.
-- Use natural keywords from the job description where supported by the CV.
+- Use the job's terminology only where the CV describes the same thing.
 - Preserve readability and truthfulness.
 TEXT,
         };

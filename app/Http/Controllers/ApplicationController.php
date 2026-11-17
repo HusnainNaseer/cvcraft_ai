@@ -32,15 +32,18 @@ class ApplicationController extends Controller
             'tone' => ['nullable', 'string', 'in:professional,concise,detailed'],
         ]);
 
+        // Drafting plus fact-checking the email takes two Gemini calls.
+        set_time_limit(150);
+
         $record = $this->results->find($validated['result']);
         if (! $record) {
             return response()->json(['message' => 'Tailored CV not found. Please generate it again.'], 404);
         }
 
-        ['cv' => $cv, 'job' => $job] = $record;
+        ['cv' => $cv, 'job' => $job, 'source' => $source] = $record;
 
         try {
-            $draft = $gemini->draftApplicationEmail($cv, $job, $validated['tone'] ?? 'professional');
+            $draft = $gemini->draftApplicationEmail($cv, $job, $validated['tone'] ?? 'professional', $source);
         } catch (GeminiException $e) {
             Log::warning('Application email draft fell back to template', ['error' => $e->getMessage()]);
             $draft = $this->fallbackDraft($cv, $job);

@@ -53,6 +53,7 @@ Fill in `.env`:
 | `GEMINI_THINKING_LEVEL` | `low` keeps responses fast; leave empty for models without thinking support |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | Gmail sending (see below) |
 | `CHROME_PATH` | Only if Chrome/Edge is installed somewhere unusual |
+| `DB_CONNECTION`, `DB_URL`, `DB_SSLMODE` | SQLite locally; in production `pgsql` with the Supabase **Session pooler** URL and `require` |
 
 With XAMPP the app runs at `http://localhost/CV_Maker/public`.
 
@@ -71,7 +72,7 @@ when no Gmail account is connected, with replies going to the email on the CV.
 
 ## Maintenance
 
-Tailored CVs (personal data) are stored in `storage/app/private/tailored-cvs/` and deleted after 30 days by
+Tailored CVs (personal data) are stored in the `tailored_cvs` database table and deleted 30 days after their last update by
 `php artisan cv:prune`, which is scheduled daily. Run `php artisan schedule:work` (or a cron entry for
 `schedule:run`) to enable it.
 

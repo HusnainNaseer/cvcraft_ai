@@ -7,7 +7,7 @@ if [ -z "$APP_KEY" ]; then
     exit 1
 fi
 
-mkdir -p storage/app/private/tailored-cvs storage/framework/cache/data storage/framework/sessions \
+mkdir -p storage/app/private storage/framework/cache/data storage/framework/sessions \
     storage/framework/views storage/logs bootstrap/cache
 touch database/database.sqlite
 

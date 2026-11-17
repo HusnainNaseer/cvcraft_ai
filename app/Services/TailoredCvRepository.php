@@ -2,36 +2,42 @@
 
 namespace App\Services;
 
-use Illuminate\Support\Facades\File;
+use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use RuntimeException;
 
 /**
- * Stores each tailored CV as a JSON file addressed by an unguessable token.
- *
- * File shape: {"cv": {...}, "job": {...}, "created_at": "..."}.
- * Older files that hold the CV at the top level are still readable.
+ * Stores each tailored CV in the `tailored_cvs` table, addressed by an unguessable token.
  */
 class TailoredCvRepository
 {
     public const TOKEN_PATTERN = '/^[a-zA-Z0-9]{40}$/';
 
-    public function create(array $cv, array $job): string
-    {
-        File::ensureDirectoryExists($this->directory(), 0755);
+    private const JSON_FLAGS = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
 
+    /**
+     * @param  string  $source  text of the original uploaded CV, used to fact-check later AI output
+     */
+    public function create(array $cv, array $job, string $source = ''): string
+    {
         $token = Str::random(40);
-        $this->write($token, [
-            'cv' => $cv,
-            'job' => $job,
-            'created_at' => now()->toIso8601String(),
+        $now = now();
+
+        $this->table()->insert([
+            'token' => $token,
+            'cv' => $this->encode($cv),
+            'job' => $this->encode($job),
+            'source' => $source !== '' ? $source : null,
+            'created_at' => $now,
+            'updated_at' => $now,
         ]);
 
         return $token;
     }
 
     /**
-     * @return array{cv: array, job: array}|null
+     * @return array{cv: array, job: array, source: string}|null
      */
     public function find(string $token): ?array
     {
@@ -39,51 +45,41 @@ class TailoredCvRepository
             return null;
         }
 
-        $path = $this->path($token);
-        if (! is_file($path)) {
+        $row = $this->table()->where('token', $token)->first(['cv', 'job', 'source']);
+        if (! $row) {
             return null;
         }
 
-        $data = json_decode((string) file_get_contents($path), true);
-        if (! is_array($data)) {
-            return null;
-        }
-
-        if (! isset($data['cv'])) {
-            return ['cv' => $data, 'job' => []];
-        }
+        $cv = json_decode((string) $row->cv, true);
+        $job = json_decode((string) $row->job, true);
 
         return [
-            'cv' => is_array($data['cv']) ? $data['cv'] : [],
-            'job' => is_array($data['job'] ?? null) ? $data['job'] : [],
+            'cv' => is_array($cv) ? $cv : [],
+            'job' => is_array($job) ? $job : [],
+            'source' => (string) ($row->source ?? ''),
         ];
     }
 
     public function updateCv(string $token, array $cv): void
     {
-        $record = $this->find($token);
-        if (! $record) {
+        $updated = $this->isValidToken($token)
+            ? $this->table()->where('token', $token)->update([
+                'cv' => $this->encode($cv),
+                'updated_at' => now(),
+            ])
+            : 0;
+
+        if ($updated === 0) {
             throw new RuntimeException('Tailored CV result not found.');
         }
-
-        $this->write($token, [...$record, 'cv' => $cv, 'updated_at' => now()->toIso8601String()]);
     }
 
     /**
-     * Delete results older than the given number of days. Returns how many were removed.
+     * Delete results not updated in the given number of days. Returns how many were removed.
      */
     public function prune(int $days): int
     {
-        $cutoff = now()->subDays($days)->getTimestamp();
-        $removed = 0;
-
-        foreach (glob($this->directory().DIRECTORY_SEPARATOR.'*.json') ?: [] as $file) {
-            if (filemtime($file) < $cutoff && @unlink($file)) {
-                $removed++;
-            }
-        }
-
-        return $removed;
+        return $this->table()->where('updated_at', '<', now()->subDays($days))->delete();
     }
 
     public function isValidToken(string $token): bool
@@ -91,22 +87,18 @@ class TailoredCvRepository
         return preg_match(self::TOKEN_PATTERN, $token) === 1;
     }
 
-    private function write(string $token, array $data): void
+    private function encode(array $data): string
     {
-        $encoded = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-        if ($encoded === false || file_put_contents($this->path($token), $encoded, LOCK_EX) === false) {
+        $encoded = json_encode($data, self::JSON_FLAGS);
+        if ($encoded === false) {
             throw new RuntimeException('Could not save the tailored CV.');
         }
+
+        return $encoded;
     }
 
-    private function path(string $token): string
+    private function table(): Builder
     {
-        return $this->directory().DIRECTORY_SEPARATOR.$token.'.json';
-    }
-
-    private function directory(): string
-    {
-        return storage_path('app/private/tailored-cvs');
+        return DB::table('tailored_cvs');
     }
 }

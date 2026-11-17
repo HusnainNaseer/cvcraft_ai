@@ -10,6 +10,14 @@ services:
         sync: false
       - key: APP_URL
         sync: false
+      # Supabase Postgres keeps CVs and sessions across restarts (the container disk is wiped).
+      # DB_URL: the Session pooler connection string (port 5432), not Direct connection (IPv6 only).
+      - key: DB_CONNECTION
+        value: pgsql
+      - key: DB_URL
+        sync: false
+      - key: DB_SSLMODE
+        value: require
       - key: GEMINI_API_KEYS
         sync: false
       - key: GOOGLE_CLIENT_ID

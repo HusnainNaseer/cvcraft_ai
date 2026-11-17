@@ -3,8 +3,8 @@ FROM php:8.2-cli-bookworm
 
 # Chromium renders PDFs and loads job pages that block plain HTTP requests.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends chromium fonts-liberation fonts-noto-core libzip-dev unzip \
-    && docker-php-ext-install zip \
+    && apt-get install -y --no-install-recommends chromium fonts-liberation fonts-noto-core libzip-dev libpq-dev unzip \
+    && docker-php-ext-install zip pdo_pgsql \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer

@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Symfony\Component\Mime\Email;
 
@@ -119,11 +121,50 @@ class GmailClient
             ->post(self::SEND_URL, ['raw' => $raw]);
 
         if (! $response->successful()) {
-            $reason = (string) $response->json('error.message', 'HTTP '.$response->status());
-            throw new RuntimeException('Gmail could not send the email: '.$reason);
+            Log::warning('Gmail send rejected', [
+                'status' => $response->status(),
+                'reason' => $this->errorReason($response),
+                'message' => $response->json('error.message'),
+            ]);
+
+            throw new RuntimeException($this->sendFailureMessage($response));
         }
 
         return (string) $response->json('id');
+    }
+
+    /**
+     * A message the user can act on, instead of Google's raw API error.
+     */
+    private function sendFailureMessage(Response $response): string
+    {
+        $reason = $this->errorReason($response);
+
+        return match (true) {
+            in_array($reason, ['SERVICE_DISABLED', 'accessNotConfigured'], true) => 'Gmail sending is not switched on for this app yet. '
+                .'The app owner must enable the Gmail API in Google Cloud Console (APIs & Services > Library > Gmail API > Enable). '
+                .'If it was just enabled, wait a few minutes and try again.',
+            $response->status() === 401 => 'Your Gmail connection has expired. Click Connect Gmail, sign in again, then resend.',
+            in_array($reason, ['ACCESS_TOKEN_SCOPE_INSUFFICIENT', 'insufficientPermissions'], true) => 'Gmail did not give permission to send email. '
+                .'Click Connect Gmail again and tick "Send email on your behalf".',
+            $response->status() === 429 || in_array($reason, ['RATE_LIMIT_EXCEEDED', 'rateLimitExceeded', 'userRateLimitExceeded'], true) => 'Gmail is limiting how fast you can send. Wait a minute and try again.',
+            $response->status() === 400 => 'Gmail rejected the email: '.(string) $response->json('error.message', 'invalid message').'.',
+            default => 'Gmail could not send the email right now. Please try again in a moment.',
+        };
+    }
+
+    /**
+     * Google puts the machine-readable reason in error.details[].reason (newer APIs) or error.errors[].reason.
+     */
+    private function errorReason(Response $response): string
+    {
+        foreach ((array) $response->json('error.details', []) as $detail) {
+            if (is_array($detail) && is_string($detail['reason'] ?? null)) {
+                return $detail['reason'];
+            }
+        }
+
+        return (string) $response->json('error.errors.0.reason', '');
     }
 
     public function revoke(array $token): void

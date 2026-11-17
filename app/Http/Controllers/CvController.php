@@ -55,7 +55,8 @@ class CvController extends Controller
             'job.emails.*' => ['email'],
         ]);
 
-        set_time_limit(240);
+        // Tailoring plus the fact-check pass can take two Gemini calls.
+        set_time_limit(300);
 
         $layout = $this->loadLayoutTemplate($validated['template'] ?? 'default.json');
         if ($layout === null) {
@@ -86,9 +87,14 @@ class CvController extends Controller
 
         $cv = [...$tailored['cv'], 'theme' => $this->theme('purple')];
         $job = $this->jobContext($validated);
-        $token = $this->results->create($cv, $job);
+        $token = $this->results->create($cv, $job, $tailored['source']);
 
-        Log::info('CV tailored', ['result' => $token, 'job' => $job['title'] ?: $job['url']]);
+        Log::info('CV tailored', [
+            'result' => $token,
+            'job' => $job['title'] ?: $job['url'],
+            'verified' => $tailored['factCheck']['verified'],
+            'corrections' => count($tailored['factCheck']['removed']),
+        ]);
 
         return response()->json([
             'success' => true,
@@ -96,6 +102,7 @@ class CvController extends Controller
                 ...$this->resultUrls($token),
                 'result' => $token,
                 'reasoning' => $tailored['reasoning'],
+                'factCheck' => $tailored['factCheck'],
                 'match' => $matcher->match($validated['jobDescription'], $this->searchableText($cv)),
                 'application' => ApplicationContact::resolve($job),
             ],
