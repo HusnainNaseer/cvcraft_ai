@@ -60,7 +60,9 @@ class GeminiService
         string $uploadedCvText,
         array $layoutTemplate,
         string $tone = 'professional',
-        ?array $uploadedFile = null
+        ?array $uploadedFile = null,
+        array $confirmed = [],
+        bool $fillGaps = false
     ): array {
         // Our own PDF text extraction can be incomplete, so ask the model for a transcription to check against too.
         $wantsTranscript = ($uploadedFile['mime_type'] ?? '') === 'application/pdf';
@@ -72,7 +74,9 @@ class GeminiService
                 $this->emptySchemaFromTemplate($layoutTemplate),
                 $tone,
                 $uploadedFile,
-                $wantsTranscript
+                $wantsTranscript,
+                $confirmed,
+                $fillGaps
             ),
         ]];
 
@@ -101,7 +105,11 @@ class GeminiService
                     $jobDescription,
                     $uploadedCvText,
                     $this->emptySchemaFromTemplate($layoutTemplate),
-                    $tone
+                    $tone,
+                    null,
+                    false,
+                    $confirmed,
+                    $fillGaps
                 ),
             ]], 60);
         }
@@ -112,9 +120,39 @@ class GeminiService
         }
 
         $transcript = $wantsTranscript && is_string($parsed['source_text'] ?? null) ? $parsed['source_text'] : '';
-        // Transcript first: the fact checks read a limited amount of text, and it is the cleaner copy.
-        $source = trim($transcript."\n".$uploadedCvText);
+        // Lines added to match the job (fill-gaps mode). They are shown to the candidate to check, and stored
+        // with the source so the fact checks keep them.
+        $added = $fillGaps ? array_slice(array_values(array_unique(array_filter(array_map(
+            fn ($item) => Str::limit($this->textValue($item), 300, ''),
+            is_array($parsed['added'] ?? null) ? $parsed['added'] : []
+        )))), 0, 30) : [];
         $cv = $this->normalizeGeneratedCv($candidate, $layoutTemplate);
+
+        // Every requirement the candidate confirmed, or that fill-gaps added, must show up under every heading.
+        $fit = $this->normalizeFit($parsed['fit'] ?? null);
+        $cv = $this->ensureCoverage($cv, $confirmed, $jobDescription, $fillGaps || $fit['level'] === 'weak', $added, $fit['target_role']);
+
+        if ($fillGaps) {
+            // Do not depend on the AI listing its additions: every skill, project, certificate, language and
+            // interest the original CV does not support is listed for the candidate, and kept.
+            $base = trim(self::confirmedBlock($confirmed)."\n".$transcript."\n".$uploadedCvText);
+            $added = [...$added, ...$this->unsupportedItems($cv, $base)];
+            $added = array_values(array_unique($added));
+        }
+
+        // Transcript first: the fact checks read a limited amount of text, and it is the cleaner copy. What the
+        // candidate confirmed and what was added for the job (including repair rounds) go first of all, so they
+        // are never cut off and the fact checks keep them.
+        $source = trim(self::confirmedBlock($confirmed)."\n".self::addedBlock($added)."\n".$transcript."\n".$uploadedCvText);
+
+        // Keep the "added" list to real additions: not section labels, the headline or the whole summary.
+        $noise = array_map('mb_strtolower', array_filter([
+            ...array_column(is_array($cv['skills'] ?? null) ? $cv['skills'] : [], 'label'),
+            (string) ($cv['personal']['headline'] ?? ''),
+            (string) ($cv['about'] ?? ''),
+        ]));
+        $added = array_values(array_filter($added, fn (string $item) => ! in_array(mb_strtolower($item), $noise, true)
+            && ! str_starts_with(mb_strtolower((string) ($cv['about'] ?? '')), mb_strtolower(mb_substr($item, 0, 60)))));
 
         // Fast, deterministic checks now; the slower AI review of sentences is a separate step (factCheckCv),
         // so the user sees real progress between the two.
@@ -128,8 +166,257 @@ class GeminiService
             'reasoning' => is_string($parsed['reasoning'] ?? null) ? $parsed['reasoning'] : '',
             'source' => $source,
             'removed' => $removed,
-            'fit' => $this->normalizeFit($parsed['fit'] ?? null),
+            'fit' => $fit,
+            'added' => $added,
         ];
+    }
+
+    /**
+     * @param  string[]  $added
+     */
+    public static function addedBlock(array $added): string
+    {
+        return $added === [] ? '' : "Added for this application to match the job (for the candidate to check):\n- ".implode("\n- ", $added);
+    }
+
+    /**
+     * Make sure the tailored CV actually adopts the job's requirements in every heading. The skills section is
+     * completed in code; the headline, summary and experience are sent back to the AI with exactly what is
+     * missing, and checked again, up to two rounds.
+     *
+     * @param  string[]  $items  requirements to cover (confirmed by the candidate or added from the job)
+     * @param  string[]  $added  receives lines the repair rounds add
+     */
+    private function ensureCoverage(array $cv, array $items, string $jobDescription, bool $requireExperience, array &$added, string $targetRole = ''): array
+    {
+        if ($items === []) {
+            return $cv;
+        }
+
+        $cv = $this->ensureKeySkills($cv, $items);
+
+        for ($round = 1; $round <= 2; $round++) {
+            $gaps = $this->coverageGaps($cv, $items, $requireExperience, $targetRole);
+            if ($gaps === []) {
+                return $cv;
+            }
+
+            Log::info('Tailored CV misses job requirements; asking the AI to revise', ['round' => $round, 'gaps' => $gaps]);
+            try {
+                $cv = $this->reviseForRequirements($cv, $items, $gaps, $jobDescription, $added);
+            } catch (GeminiException $e) {
+                Log::warning('Requirement revision failed', ['error' => $e->getMessage()]);
+
+                return $cv;
+            }
+        }
+
+        return $cv;
+    }
+
+    /**
+     * Items in the list-like sections that the original CV does not support.
+     *
+     * @return string[]
+     */
+    private function unsupportedItems(array $cv, string $source): array
+    {
+        $items = [];
+        foreach ((array) ($cv['skills'] ?? []) as $group) {
+            foreach ((array) ($group['items'] ?? []) as $skill) {
+                $items[] = (string) $skill;
+            }
+        }
+        foreach ((array) ($cv['projects'] ?? []) as $project) {
+            $items[] = trim(($project['title'] ?? '').' '.($project['subtitle'] ?? ''));
+            $items[] = (string) ($project['description'] ?? '');
+        }
+        foreach ((array) ($cv['certifications'] ?? []) as $certificate) {
+            $items[] = (string) ($certificate['title'] ?? '');
+            $items[] = (string) ($certificate['type'] ?? '');
+            $items[] = (string) ($certificate['detail'] ?? '');
+        }
+        foreach ((array) ($cv['languages']['other'] ?? []) as $language) {
+            $items[] = (string) ($language['name'] ?? '');
+        }
+        foreach ((array) ($cv['interests'] ?? []) as $interest) {
+            $items[] = (string) ($interest['description'] ?? '');
+        }
+        $items[] = (string) ($cv['hobbies'] ?? '');
+        foreach ((array) ($cv['education'] ?? []) as $entry) {
+            $items[] = (string) ($entry['details'] ?? '');
+        }
+
+        return array_values(array_filter(array_map('trim', $items), fn (string $item) => $item !== '' && ! $this->guard->supports($source, $item)));
+    }
+
+    /**
+     * "Key skills for this role" comes first and lists every requirement.
+     */
+    private function ensureKeySkills(array $cv, array $items): array
+    {
+        $label = 'Key skills for this role';
+        $groups = is_array($cv['skills'] ?? null) ? $cv['skills'] : [];
+        $existing = [];
+        foreach ($groups as $index => $group) {
+            if (is_array($group) && strcasecmp(trim((string) ($group['label'] ?? '')), $label) === 0) {
+                $existing = (array) ($group['items'] ?? []);
+                unset($groups[$index]);
+            }
+        }
+
+        $merged = [];
+        foreach ([...$items, ...$existing] as $item) {
+            $item = trim((string) $item);
+            if ($item !== '' && ! in_array(mb_strtolower($item), array_map('mb_strtolower', $merged), true)) {
+                $merged[] = $item;
+            }
+        }
+
+        $cv['skills'] = [['label' => $label, 'items' => $merged], ...array_values($groups)];
+
+        return $cv;
+    }
+
+    /**
+     * Which headings do not reflect the requirements yet.
+     *
+     * @return string[]
+     */
+    private function coverageGaps(array $cv, array $items, bool $requireExperience, string $targetRole = ''): array
+    {
+        $headline = (string) ($cv['personal']['headline'] ?? '');
+        $about = (string) ($cv['about'] ?? '');
+        $experience = '';
+        foreach ((array) ($cv['experience'] ?? []) as $entry) {
+            $experience .= ' '.($entry['summary'] ?? '').' '.implode(' ', (array) ($entry['highlights'] ?? []));
+        }
+
+        $covered = fn (string $text) => array_values(array_filter($items, fn (string $item) => $this->mentions($text, $item)));
+        $important = array_slice($items, 0, 3);
+
+        $gaps = [];
+        if (count(array_intersect($covered($headline), $important)) === 0) {
+            $gaps[] = 'headline: must name at least one of: '.implode('; ', $important);
+        }
+        $aboutMissing = array_values(array_diff($items, $covered($about)));
+        if (count($aboutMissing) > max(1, intdiv(count($items), 3))) {
+            $gaps[] = 'about: must mention '.implode('; ', $aboutMissing);
+        }
+        // Experience cannot show availability items (night shifts, commuting), so it should reflect the target role
+        // itself: at least one highlight that names the kind of work the job is about.
+        $roleWords = array_filter(preg_split('/[^\p{L}]+/u', mb_strtolower($targetRole)) ?: [], fn ($w) => mb_strlen($w) > 3
+            && ! in_array($w, ['representative', 'specialist', 'officer', 'assistant', 'executive', 'senior', 'junior', 'agent', 'associate', 'level', 'entry'], true));
+        $reflectsRole = $roleWords !== [] && $this->mentions($experience, implode(' ', array_slice(array_values($roleWords), 0, 1)));
+        if ($requireExperience && ! $reflectsRole && $covered($experience) === []) {
+            $gaps[] = 'experience: each role needs one highlight showing work related to '.($targetRole ?: 'this job').' (for example dealing with clients, customers or users)';
+        }
+
+        return $gaps;
+    }
+
+    /**
+     * True when most meaningful words of the requirement appear in the text (so "Night shift availability"
+     * matches "available for night shifts").
+     */
+    private function mentions(string $text, string $item): bool
+    {
+        $stem = fn (string $word) => mb_substr($word, 0, 5);
+        $words = array_filter(preg_split('/[^\p{L}\p{N}+#]+/u', mb_strtolower($item)) ?: [], fn ($w) => mb_strlen($w) > 2
+            && ! in_array($w, ['and', 'the', 'for', 'with', 'availability', 'experience', 'ability', 'skills', 'year', 'years'], true));
+        if ($words === []) {
+            return str_contains(mb_strtolower($text), mb_strtolower($item));
+        }
+
+        $textStems = array_map($stem, preg_split('/[^\p{L}\p{N}+#]+/u', mb_strtolower($text)) ?: []);
+        $hits = count(array_filter($words, fn ($w) => in_array($stem($w), $textStems, true)));
+
+        return $hits / count($words) >= 0.5;
+    }
+
+    /**
+     * Ask the AI to fix exactly the headings that miss the requirements.
+     *
+     * @throws GeminiException
+     */
+    private function reviseForRequirements(array $cv, array $items, array $gaps, string $jobDescription, array &$added): array
+    {
+        $current = json_encode([
+            'headline' => $cv['personal']['headline'] ?? '',
+            'about' => $cv['about'] ?? '',
+            'experience' => array_map(fn ($entry) => [
+                'title' => $entry['title'] ?? '',
+                'company' => $entry['company'] ?? '',
+                'highlights' => array_values((array) ($entry['highlights'] ?? [])),
+            ], (array) ($cv['experience'] ?? [])),
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $itemList = '- '.implode("\n- ", $items);
+        $gapList = '- '.implode("\n- ", $gaps);
+        $job = Str::limit($jobDescription, 4000, '');
+
+        $prompt = <<<PROMPT
+You are revising part of a CV so it clearly fits the job below. The candidate's REQUIREMENTS list is true for them and must be reflected in the CV.
+
+Fix these problems:
+{$gapList}
+
+Rules:
+- headline: one line (max 110 characters) aimed at the target job that names the most important requirements.
+- about: 3-4 sentences written for this job that mention every requirement naturally.
+- experience: keep every existing highlight; if a role has no highlight related to the job, add ONE short highlight showing related work in that role (communication, clients, customers, teamwork, reliability) without new numbers, dates, employers or job titles.
+- Never invent employers, job titles, dates, degrees, certifications or numbers.
+Return ONLY JSON: {"headline": "...", "about": "...", "experience": [["highlight", "..."], ...one array per role in the same order...]}
+
+REQUIREMENTS:
+{$itemList}
+
+CURRENT CV PARTS:
+{$current}
+
+JOB:
+{$job}
+PROMPT;
+
+        $revised = $this->generateJson([['text' => $prompt]], 30, budget: 35);
+
+        $headline = $this->textValue($revised['headline'] ?? '');
+        if ($headline !== '') {
+            $cv['personal']['headline'] = Str::limit($headline, 160, '');
+            $added[] = $cv['personal']['headline'];
+        }
+        $about = $this->textValue($revised['about'] ?? '');
+        if ($about !== '') {
+            $cv['about'] = $about;
+        }
+
+        foreach ((array) ($revised['experience'] ?? []) as $index => $highlights) {
+            if (! isset($cv['experience'][$index]) || ! is_array($highlights)) {
+                continue;
+            }
+            $before = array_map('mb_strtolower', (array) ($cv['experience'][$index]['highlights'] ?? []));
+            $clean = array_values(array_filter(array_map(fn ($h) => $this->textValue($h), $highlights)));
+            if ($clean === []) {
+                continue;
+            }
+            foreach ($clean as $highlight) {
+                if (! in_array(mb_strtolower($highlight), $before, true)) {
+                    $added[] = $highlight;
+                }
+            }
+            $cv['experience'][$index]['highlights'] = $clean;
+        }
+
+        return $cv;
+    }
+
+    /**
+     * The facts a candidate confirmed for an application, as text that is stored and checked with the CV.
+     *
+     * @param  string[]  $confirmed
+     */
+    public static function confirmedBlock(array $confirmed): string
+    {
+        return $confirmed === [] ? '' : "Confirmed by the candidate for this application:\n- ".implode("\n- ", $confirmed);
     }
 
     /**
@@ -219,7 +506,10 @@ Verdicts:
 - "fix": the claim is mostly supported but adds something the ORIGINAL CV does not state, for example a technology, responsibility, seniority or leadership ("led", "senior", "managed", "mentored", "architected"), scale ("scalable", "high-traffic", "enterprise"), domain or product type ("SaaS", "fintech"), client type, team size, number, metric or outcome. Put the corrected claim in "text": remove only the unsupported parts, keep the remaining wording, and add nothing new.
 - "remove": the main point of the claim is not supported by the ORIGINAL CV.
 
-Be strict. Wording that comes from the JOB DESCRIPTION but is not backed by the ORIGINAL CV is unsupported. A job title or degree name is supported only if the ORIGINAL CV gives it (small wording differences are fine).
+Be strict about FACTS. Wording that comes from the JOB DESCRIPTION but is not backed by the ORIGINAL CV is unsupported. A job title or degree name is supported only if the ORIGINAL CV gives it (small wording differences are fine).
+
+REFRAMING IS ALLOWED: describing facts the ORIGINAL CV states in terms of the transferable skill they show is supported, so "keep" it. Examples: "worked with project managers and client teams" supports "client communication" and "stakeholder communication"; "mentored two junior developers" supports "training and coaching others"; "wrote technical documentation" supports "clear written communication"; "English (C1)" supports "fluent English"; "handled refunds and complaints" supports "complaint handling". A neutral headline or summary that only combines such supported points is also "keep".
+Do NOT allow new facts: roles, industries, experience types (e.g. "call-centre experience", "sales experience"), tools, numbers, availability (shifts, start dates, relocation) or achievements the ORIGINAL CV does not state.
 
 Return ONLY JSON:
 {"results": [{"id": "c1", "verdict": "keep", "text": "", "reason": "short reason"}]}
@@ -257,6 +547,109 @@ PROMPT;
         }
 
         return ['verdicts' => $verdicts, 'complete' => count($verdicts) === count($ids)];
+    }
+
+    /**
+     * List what a job asks for, in any field (not only technical skills).
+     *
+     * @return array<int, array{name: string, type: string, importance: string}>
+     *
+     * @throws GeminiException
+     */
+    public function extractRequirements(string $jobDescription): array
+    {
+        $jobDescription = Str::limit($jobDescription, 8000, '');
+
+        $prompt = <<<PROMPT
+Read this job description and list what the employer requires or prefers from candidates. Return ONLY JSON:
+{"requirements": [{"name": "short label, at most 5 words", "type": "skill|experience|qualification|language|availability|other", "importance": "required|preferred"}]}
+
+Rules:
+- 4 to 12 items, most important first.
+- Concrete and checkable, in the job's own field. Examples: "Fluent spoken English", "Inbound call handling", "Sales experience", "Night shift availability", "Laravel", "2+ years PHP", "Bachelor's degree", "Customer complaint handling".
+- Merge duplicates. Skip salary, benefits, company description and the office address.
+- Skip vague filler such as "hard working" or "team player" unless the job stresses it.
+
+JOB DESCRIPTION:
+{$jobDescription}
+PROMPT;
+
+        $requirements = [];
+        foreach ((array) ($this->generateJson([['text' => $prompt]], 25, budget: 30)['requirements'] ?? []) as $item) {
+            $name = Str::limit($this->textValue(is_array($item) ? ($item['name'] ?? '') : $item), 60, '');
+            if ($name === '' || isset($requirements[strtolower($name)])) {
+                continue;
+            }
+            $requirements[strtolower($name)] = [
+                'name' => $name,
+                'type' => $this->textValue(is_array($item) ? ($item['type'] ?? 'other') : 'other') ?: 'other',
+                'importance' => strtolower($this->textValue(is_array($item) ? ($item['importance'] ?? '') : '')) === 'preferred' ? 'preferred' : 'required',
+            ];
+        }
+
+        if ($requirements === []) {
+            throw new GeminiException('No requirements were found in the job description.');
+        }
+
+        return array_slice(array_values($requirements), 0, 12);
+    }
+
+    /**
+     * Decide which requirements a CV shows. The CV is given as text, or as the original file when its text
+     * could not be read.
+     *
+     * @param  array<int, array{name: string}>  $requirements
+     * @param  array{mime_type: string, data: string}|null  $cvFile
+     * @return array<int, array{met: bool, evidence: string}> in the same order as $requirements
+     *
+     * @throws GeminiException
+     */
+    public function assessRequirements(array $requirements, string $cvText, ?array $cvFile = null): array
+    {
+        $list = [];
+        foreach (array_values($requirements) as $i => $requirement) {
+            $list['r'.($i + 1)] = $requirement['name'];
+        }
+        $listJson = json_encode($list, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $cv = trim($cvText) !== '' ? Str::limit($cvText, 14000, '') : '[The CV is attached as a file. Read it directly.]';
+
+        $prompt = <<<PROMPT
+For each job requirement, decide whether the candidate's CV shows it. Return ONLY JSON:
+{"results": [{"id": "r1", "met": true, "evidence": "a few words from the CV that show it, or empty"}]}
+
+Rules:
+- "met" is true only when the CV states it or clearly demonstrates it. Examples: "handled 80 calls per night shift" demonstrates "Inbound call handling" and "Night shift availability"; "English (C1)" demonstrates "Fluent English"; "3 years with Laravel" demonstrates "2+ years PHP".
+- Experience from a different field counts only when it truly demonstrates the requirement.
+- Availability (shifts, start date, relocation) is met only when the CV says so.
+- Include every id exactly once.
+
+REQUIREMENTS:
+{$listJson}
+
+CV:
+{$cv}
+PROMPT;
+
+        $parts = [['text' => $prompt]];
+        if ($cvFile && trim($cvText) === '') {
+            $parts[] = ['inline_data' => ['mime_type' => $cvFile['mime_type'], 'data' => $cvFile['data']]];
+        }
+
+        $byId = [];
+        foreach ((array) ($this->generateJson($parts, 25, budget: 30)['results'] ?? []) as $result) {
+            if (is_array($result) && isset($list[(string) ($result['id'] ?? '')])) {
+                $byId[(string) $result['id']] = [
+                    'met' => filter_var($result['met'] ?? false, FILTER_VALIDATE_BOOL),
+                    'evidence' => Str::limit($this->textValue($result['evidence'] ?? ''), 120, ''),
+                ];
+            }
+        }
+
+        if (count($byId) !== count($list)) {
+            throw new GeminiException('The requirement check was incomplete.');
+        }
+
+        return array_map(fn (string $id) => $byId[$id], array_keys($list));
     }
 
     /**
@@ -599,7 +992,9 @@ PROMPT;
         array $emptySchema,
         string $tone,
         ?array $uploadedFile = null,
-        bool $wantsTranscript = false
+        bool $wantsTranscript = false,
+        array $confirmed = [],
+        bool $fillGaps = false
     ): string {
         $schemaJson = json_encode($emptySchema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         $fileNote = $uploadedFile
@@ -619,6 +1014,29 @@ PROMPT;
             ? "\n- Also return \"source_text\": a faithful plain-text transcription of the ORIGINAL uploaded CV file (not the tailored version). Copy it word for word; do not summarise, reorder or correct it."
             : '';
         $transcriptShape = $wantsTranscript ? ",\n  \"source_text\": \"verbatim text of the original CV\"" : '';
+        $addedShape = $fillGaps ? ",\n  \"added\": [\"every sentence, highlight, skill or phrase you added that the uploaded CV does not state, copied exactly as it appears in the cv JSON\"]" : '';
+        $fillGapsRule = ! $fillGaps ? '' : <<<'RULE'
+
+
+JOB-FIRST MODE IS ON. The candidate wants the CV built around this job. Where it conflicts with the truth rule or the completeness rule, this mode wins:
+- Make the CV show EVERY requirement of the job. Put the most important ones in the headline and "about", list all of them in a skills group labelled "Key skills for this role" (first), and where it fits an existing role, add one highlight describing related work in that role (e.g. for a call-centre job: "Handled client calls and emails to resolve their questions").
+- Write the headline and "about" for the target job, as a candidate for that job would.
+- For a "weak" fit, cut the old field's technical detail down to one short line per role and one compact "Technical background" skills group at the end.
+- FILL EVERY SECTION of the template; never leave one empty. Rewrite every section for this job:
+  - personal.headline and "about": written for the target job.
+  - experience: keep every role, employer, title and date; rewrite each role's summary and highlights for this job (2-4 highlights per role).
+  - education: keep every entry; in "details" mention what is relevant to this job.
+  - projects: if the CV has none relevant, add 1-2 short job-relevant activities (e.g. volunteering, a personal or university project) with no dates or numbers.
+  - skills: "Key skills for this role" first, then the job's tools and soft skills, then any background skills.
+  - languages: keep the CV's languages; add the language the job needs if missing, with a level only if the CV gives one.
+  - certifications: if the CV has none relevant, add 1-2 well-known courses that fit this job as SUGGESTIONS: title = course name, type = provider, detail = "Suggested – replace with your own".
+  - interests and hobbies: one short line each that fits the job.
+- Never invent employers, job titles, dates, degrees, grades, links, or any number, percentage or metric.
+- List EVERY sentence, highlight, skill or item you added that the uploaded CV does not state in "added", copied exactly as it appears in the cv JSON. The candidate reviews this list and can change anything with Edit.
+RULE;
+        $confirmedRule = $confirmed === [] ? '' : "\n\nCANDIDATE CONFIRMED (the candidate states these are true for them; treat them as facts from the CV):\n- "
+            .implode("\n- ", $confirmed)
+            ."\nEvery confirmed item must appear in the tailored CV: in the headline or about section when it matters most for this job, and in a skills group labelled \"Key skills for this role\". Word each one exactly as confirmed, without adding employers, dates or numbers the candidate did not give. Confirmed items count as CV evidence when you judge the fit.";
 
         return <<<PROMPT
 You are tailoring a candidate's CV for a job. Tailoring means SELECTING, ORDERING, REWORDING and EMPHASISING what the CV already says so the most relevant facts stand out. It never means adding anything.
@@ -630,10 +1048,10 @@ Return ONLY valid JSON, no markdown fences or comments, in exactly this shape:
     "target_role": "the job title from the job description",
     "company": "the hiring company from the job description, or empty",
     "missing": ["requirements of the job that the CV does not show (max 6, short)"],
-    "note": "one sentence for the candidate about how well the CV fits this job"
+    "note": "one sentence to the candidate, in the second person (\"your CV...\"), about how well the CV fits this job"
   },
   "cv": { ...CV JSON using the provided schema... },
-  "reasoning": "Brief summary of what was emphasised or reordered and why"{$transcriptShape}
+  "reasoning": "Brief summary of what was emphasised or reordered and why"{$transcriptShape}{$addedShape}
 }
 
 FIRST, JUDGE THE FIT between the CV and the job:
@@ -648,7 +1066,7 @@ THE TRUTH RULE (overrides every other instruction):
 - Every field you fill must be stated in the CV. If the CV does not state something, leave that field as an empty string or empty array. An empty field is always better than a guessed one. This applies especially to business_sector, department, location, website, link, date_of_birth, nationality and language levels.
 - Only set languages.mother when the CV explicitly says which language is the mother tongue or native language. Otherwise list every language under "other" with empty levels unless the CV gives levels.
 - Keep each job title exactly as the CV gives it.
-- If a skill the job asks for is not in the CV, leave it out. Missing skills are shown to the user separately; your job is not to hide gaps.{$transcriptRule}
+- If a skill the job asks for is not in the CV, leave it out. Missing skills are shown to the user separately; your job is not to hide gaps.{$transcriptRule}{$confirmedRule}{$fillGapsRule}
 
 THE COMPLETENESS RULE (for "strong" and "partial" fit; as important as the truth rule):
 - The tailored CV must contain EVERYTHING the uploaded CV contains. Keep every job, every bullet point and achievement, every number and metric, every named product, client, tool, technology, team size, link, grade, project, certificate, language and interest.

@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use App\Services\ApplicationContact;
 use App\Services\CvUploadParser;
 use App\Services\JobPostingFetcher;
-use App\Services\SkillMatcher;
+use App\Services\RequirementMatcher;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -34,21 +34,29 @@ class JobDescriptionController extends Controller
         ]);
     }
 
-    public function skills(Request $request, CvUploadParser $parser, SkillMatcher $matcher): JsonResponse
+    /**
+     * How well the uploaded CV covers the job's requirements, before tailoring. Works for jobs in any field;
+     * when the CV's text cannot be read (many PDFs), the AI reads the file itself.
+     */
+    public function skills(Request $request, CvUploadParser $parser, RequirementMatcher $matcher): JsonResponse
     {
         $validated = $request->validate([
             'jobDescription' => ['required', 'string', 'min:30', 'max:30000'],
             'cv' => ['required', 'file', 'mimes:pdf,doc,docx,txt,html,htm', 'max:10240'],
         ]);
 
-        $cvText = $parser->extract($request->file('cv'));
-        if (Str::length($cvText) < 30) {
-            return response()->json(['message' => 'Skills match will show after tailoring for this file.'], 422);
+        set_time_limit(90);
+
+        $file = $request->file('cv');
+        $cvText = $parser->extract($file);
+        $cvFile = Str::length($cvText) < 30 ? $parser->aiFilePart($file) : null;
+        if (Str::length($cvText) < 30 && ! $cvFile) {
+            return response()->json(['message' => 'Could not read this CV. Try a PDF or TXT version.'], 422);
         }
 
         return response()->json([
             'success' => true,
-            ...$matcher->match($validated['jobDescription'], $cvText),
+            ...$matcher->match($validated['jobDescription'], Str::length($cvText) < 30 ? '' : $cvText, $cvFile),
         ]);
     }
 }

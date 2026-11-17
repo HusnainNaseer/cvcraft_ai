@@ -359,6 +359,13 @@ html.dark .step.done .step-num { color: #062C1F; }
 .kw-chip.hit { background: var(--success-soft); border-color: transparent; color: var(--success); }
 .kw-chip.miss { background: var(--surface); color: var(--text-3); border-style: dashed; }
 .kw-chip i { font-size: .625rem; }
+.kw-chip.confirm { cursor: pointer; background: var(--surface); color: var(--text-2); border: 1px dashed var(--border-strong); transition: background .15s, border-color .15s, color .15s; }
+.kw-chip.confirm:hover { border-color: var(--brand); color: var(--text); }
+.kw-chip.confirm.on { background: var(--brand-soft); border: 1px solid var(--brand); color: var(--brand-text); }
+.kw-chip.confirm i { font-size: .75rem; }
+.confirm-hint { font-size: .8125rem; color: var(--text-2); margin-bottom: 8px; display: flex; gap: 6px; align-items: baseline; }
+.confirm-hint i { color: var(--brand-text); }
+.confirm-count { font-size: .8125rem; font-weight: 600; color: var(--brand-text); margin-top: 8px; }
 .match-legend { display: flex; gap: 14px; margin-top: 10px; font-size: .75rem; color: var(--text-3); }
 
 /* Review card (after tailoring) */
@@ -370,6 +377,15 @@ html.dark .step.done .step-num { color: #062C1F; }
 .review-card.warn .review-icon { background: var(--warning-soft); color: var(--warning); }
 .review-title { font-weight: 600; font-size: .9375rem; }
 .review-sub { font-size: .8125rem; color: var(--text-2); }
+.fill-gaps { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.fill-gaps .field-hint { margin-top: 6px; }
+.added-note { display: flex; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--warning-soft); }
+.added-note > i { color: var(--warning); margin-top: 3px; }
+.added-note strong { display: block; font-size: .875rem; }
+.added-note p { font-size: .8125rem; color: var(--text-2); margin-top: 2px; }
+.added-list { list-style: none; margin-top: 8px; display: grid; gap: 5px; max-height: 200px; overflow-y: auto; }
+.added-list li { font-size: .8125rem; color: var(--text); padding-left: 14px; position: relative; line-height: 1.45; }
+.added-list li::before { content: '+'; position: absolute; left: 0; font-weight: 700; color: var(--warning); }
 .fit-note { display: flex; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--warning-soft); }
 .fit-note > i { color: var(--warning); margin-top: 3px; }
 .fit-note strong { display: block; font-size: .875rem; }
@@ -598,6 +614,10 @@ html.dark .ac-icon-li { color: #5AA7F0; }
 .btn-send { width: 100%; }
 .send-error { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--danger-soft); border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent); color: var(--text); font-size: .875rem; line-height: 1.5; }
 .send-error i { color: var(--danger); margin-top: 3px; }
+.upload-warning { background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.upload-warning > i { color: var(--warning) !important; }
+.match-card.flash { animation: flash 1.6s ease; }
+@keyframes flash { 0%, 60% { box-shadow: 0 0 0 4px var(--brand-ring); border-color: var(--brand); } }
 
 /* How it works */
 .how-steps { list-style: none; display: grid; gap: 16px; counter-reset: how; }

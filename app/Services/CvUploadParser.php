@@ -9,6 +9,27 @@ use ZipArchive;
 
 class CvUploadParser
 {
+    /** File types the AI can read directly. */
+    private const AI_READABLE_TYPES = [
+        'pdf' => 'application/pdf',
+        'txt' => 'text/plain',
+        'html' => 'text/html',
+        'htm' => 'text/html',
+    ];
+
+    /**
+     * The uploaded file in the form the AI accepts, or null for types it cannot read (Word files).
+     *
+     * @return array{mime_type: string, data: string, name: string}|null
+     */
+    public function aiFilePart(UploadedFile $file): ?array
+    {
+        $mimeType = self::AI_READABLE_TYPES[strtolower($file->getClientOriginalExtension())] ?? null;
+        $bytes = $mimeType ? $file->get() : null;
+
+        return $bytes ? ['mime_type' => $mimeType, 'data' => base64_encode($bytes), 'name' => $file->getClientOriginalName()] : null;
+    }
+
     public function extract(UploadedFile $file): string
     {
         $extension = strtolower($file->getClientOriginalExtension());

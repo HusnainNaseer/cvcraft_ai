@@ -31,6 +31,8 @@ const S = {
   timer: null,
   editing: null,
   photoDataUrl: '',
+  requirements: [],
+  confirmed: new Set(),
   themeQueue: Promise.resolve(),
 };
 
@@ -54,6 +56,7 @@ const CV_PHOTO_URL = appUrl(@json(route('cv.photo', [], false)));
 const CV_THEME_URL = appUrl(@json(route('cv.theme', [], false)));
 const CV_DOWNLOAD_URL = appUrl(@json(route('cv.download', [], false)));
 const CV_SHARE_URL = appUrl(@json(route('cv.share', [], false)));
+const CV_MATCH_URL = appUrl(@json(route('cv.match', [], false)));
 const CV_FACT_CHECK_URL = appUrl(@json(route('cv.fact-check', [], false)));
 const CV_CONTENT_URL = appUrl(@json(route('cv.content', [], false)));
 const CV_CONTENT_UPDATE_URL = appUrl(@json(route('cv.content.update', [], false)));
@@ -188,8 +191,34 @@ function processFile(f) {
   document.getElementById('uploadBadge').className = 'badge badge-done';
   document.getElementById('uploadBadge').textContent = 'Uploaded';
   setStep(1,'done'); setStep(2,'active');
+  document.getElementById('uploadWarning').hidden = true;
   checkReady();
   scheduleSkillMatch();
+  warnIfAppOutput(f);
+}
+
+/**
+ * Re-tailoring a CV that CVCraft itself produced gives weak results. The app's PDFs embed the template's font
+ * (Source Sans 3), which uploaded CVs do not, so that is checked as soon as the file is chosen.
+ */
+async function warnIfAppOutput(file) {
+  if (!/\.pdf$/i.test(file.name)) return;
+  try {
+    const text = new TextDecoder('latin1').decode(await file.arrayBuffer());
+    if (S.file === file && text.includes('SourceSans3')) {
+      document.getElementById('uploadWarning').hidden = false;
+      toast('warn', 'This is a CV downloaded from CVCraft. Upload your original CV for the best result.', 8000);
+    }
+  } catch (e) {}
+}
+
+/** Take the user to the requirement tick boxes. */
+function showRequirements() {
+  const card = document.getElementById('matchCard');
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  card.classList.remove('flash');
+  void card.offsetWidth;
+  card.classList.add('flash');
 }
 
 function removeFile() {
@@ -202,6 +231,8 @@ function removeFile() {
   resetPhotoTool();
   hideReview();
   S.initialScore = null;
+  S.confirmed = new Set();
+  document.getElementById('uploadWarning').hidden = true;
   document.getElementById('uploadZone').style.display = '';
   document.getElementById('fileCard').classList.remove('show');
   document.getElementById('cvInput').value = '';
@@ -254,6 +285,7 @@ function onJdInput(el) {
 }
 
 function clearSkillChips() {
+  S.requirements = [];
   S.matchScore = null;
   S.matchedSkills = [];
   S.missingSkills = [];
@@ -276,7 +308,7 @@ function renderSkillLoading(text, busy = true) {
 
 function scheduleSkillMatch() {
   clearTimeout(S.skillTimer);
-  S.skillTimer = setTimeout(analyzeJobSkills, 450);
+  S.skillTimer = setTimeout(analyzeJobSkills, 1200);
 }
 
 async function analyzeJobSkills() {
@@ -297,7 +329,7 @@ async function analyzeJobSkills() {
   }
 
   const requestId = ++S.skillRequestId;
-  renderSkillLoading('Matching job skills with CV');
+  renderSkillLoading('Reading the job requirements and checking your CV…');
 
   const formData = new FormData();
   formData.append('jobDescription', jobDescription);
@@ -325,7 +357,7 @@ async function analyzeJobSkills() {
 
     if (S.matchScore !== null) {
       if (!S.generated) S.initialScore = S.matchScore;
-      showMatchScore(S.matchScore, S.matchedSkills, S.missingSkills, 'Skills match: your CV');
+      showMatchScore(S.matchScore, S.matchedSkills, S.missingSkills, 'Job requirements met: your CV', data.requirements || []);
     } else {
       hideMatchScore();
     }
@@ -594,6 +626,8 @@ async function runTailoring(btn, signal, progress) {
       if (Array.isArray(value)) value.forEach(item => formData.append(`job[${key}][]`, item));
       else if (value) formData.append(`job[${key}]`, value);
     });
+    confirmedForJob().forEach(item => formData.append('confirmed[]', item));
+    formData.append('fillGaps', document.getElementById('fillGaps').checked ? '1' : '0');
 
     // Stage 1 + 2: upload, then the AI rewrite (the request returns when tailoring is done).
     progress.start(0);
@@ -632,7 +666,6 @@ async function runTailoring(btn, signal, progress) {
     progress.done(3);
     await new Promise(resolve => setTimeout(resolve, 300));
 
-    const match = check.match || data.match;
     S.tailoredResult = data.result;
     S.tailoredPreviewUrl = appUrl(data.previewUrl);
     S.tailoredDownloadUrl = appUrl(data.downloadUrl);
@@ -640,14 +673,10 @@ async function runTailoring(btn, signal, progress) {
     S.applyPrepared = null;
     S.applyRendered = false;
     S.applyPromise = null;
-    if (match) {
-      S.matchScore = Number.isInteger(match.score) ? match.score : null;
-      S.matchedSkills = match.matched || [];
-      S.missingSkills = match.missing || [];
-    }
     resetPhotoTool();
 
     S.generated = true;
+    S.confirmedChanged = false;
     resetButton();
     showView('cv');
     window.innerWidth < 900 ? resetZoom() : measurePreview();
@@ -656,12 +685,14 @@ async function runTailoring(btn, signal, progress) {
     document.getElementById('esStep3').classList.add('done');
     ['btnDownload','btnShare','btnApply'].forEach(id=>document.getElementById(id).disabled=false);
     showPhotoTool();
-    showMatchScore(S.matchScore ?? 0, S.matchedSkills, S.missingSkills, 'Skills match: tailored CV');
     showFactCheck({
       verified: Boolean(check.factCheck?.verified),
+      mode: check.factCheck?.mode,
       removed: [...(data.removed || []), ...(check.factCheck?.removed || [])],
     });
     showFit(data.fit);
+    showAdded(data.added || []);
+    refreshMatch();
     // On phones the preview sits below the form: bring the finished CV into view.
     if (window.innerWidth < 900) document.querySelector('.stage').scrollIntoView({ behavior: 'smooth', block: 'start' });
     prepareApplication().catch(() => {});
@@ -758,7 +789,8 @@ function resetZoom() {
 }
 
 /*  Match score  */
-function showMatchScore(score, matched, missing, label = 'Skills match') {
+function showMatchScore(score, matched, missing, label = 'Skills match', requirements = null) {
+  if (Array.isArray(requirements)) S.requirements = requirements;
   score = Math.max(0, Math.min(100, Number(score) || 0));
   document.getElementById('matchCard').classList.add('show');
   document.getElementById('matchLabelText').textContent = label;
@@ -774,9 +806,53 @@ function showMatchScore(score, matched, missing, label = 'Skills match') {
     c.innerHTML = `<i class="fas ${icon}" aria-hidden="true"></i>${escapeChip(word)}`;
     chips.appendChild(c);
   };
-  matched.forEach(w => add(w, 'hit', 'fa-check', 'In your CV'));
-  missing.forEach(w => add(w, 'miss', 'fa-minus', 'Not in your CV'));
-  document.getElementById('matchLegend').hidden = !(matched.length || missing.length);
+  matched.forEach(w => add(w, 'hit', 'fa-check', 'Your CV shows this'));
+
+  const canConfirm = S.requirements.length > 0;
+  missing.forEach(w => {
+    if (!canConfirm) return add(w, 'miss', 'fa-minus', 'Not shown in your CV');
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'kw-chip confirm' + (S.confirmed.has(w) ? ' on' : '');
+    chip.setAttribute('aria-pressed', String(S.confirmed.has(w)));
+    chip.title = 'Tick if this is true for you. It will be added to your CV.';
+    chip.setAttribute('aria-label', `${w}: tick if this is true for you`);
+    chip.innerHTML = `<i class="fas ${S.confirmed.has(w) ? 'fa-square-check' : 'fa-square'}" aria-hidden="true"></i>${escapeChip(w)}`;
+    chip.addEventListener('click', () => toggleConfirmed(w, chip));
+    chips.appendChild(chip);
+  });
+
+  const legend = document.getElementById('matchLegend');
+  legend.hidden = !(matched.length || missing.length);
+  document.getElementById('confirmHint').hidden = !(canConfirm && missing.length);
+  updateConfirmState();
+}
+
+/** The candidate confirms (or un-confirms) that a job requirement is true for them. */
+function toggleConfirmed(name, chip) {
+  S.confirmed.has(name) ? S.confirmed.delete(name) : S.confirmed.add(name);
+  const on = S.confirmed.has(name);
+  chip.classList.toggle('on', on);
+  chip.setAttribute('aria-pressed', String(on));
+  chip.querySelector('i').className = `fas ${on ? 'fa-square-check' : 'fa-square'}`;
+  S.confirmedChanged = S.generated;
+  updateConfirmState();
+}
+
+/** Only requirements of the current job are sent. */
+function confirmedForJob() {
+  const names = new Set(S.requirements.map(r => r.name));
+  return [...S.confirmed].filter(name => names.has(name));
+}
+
+function updateConfirmState() {
+  const count = confirmedForJob().length;
+  const note = document.getElementById('confirmCount');
+  note.hidden = count === 0;
+  note.textContent = `${count} confirmed. ${S.generated && S.confirmedChanged ? 'Tailor again to add them to your CV.' : 'They will be added to your CV.'}`;
+  if (S.generated && !S.abort) {
+    document.getElementById('genLabel').textContent = S.confirmedChanged ? 'Tailor again with your answers' : 'Tailor again';
+  }
 }
 
 function hideMatchScore() {
@@ -1097,10 +1173,13 @@ function showFactCheck(factCheck) {
   const card = document.getElementById('reviewCard');
 
   card.classList.remove('ok', 'warn');
+  const built = factCheck?.mode === 'fill';
   card.classList.add(verified ? 'ok' : 'warn', 'show');
-  document.getElementById('reviewIcon').className = `fas ${verified ? 'fa-shield-halved' : 'fa-triangle-exclamation'}`;
-  document.getElementById('reviewTitle').textContent = verified ? 'Fact-checked against your CV' : 'Please review before sending';
-  document.getElementById('reviewSub').textContent = !verified
+  document.getElementById('reviewIcon').className = `fas ${verified ? 'fa-shield-halved' : built ? 'fa-wand-magic-sparkles' : 'fa-triangle-exclamation'}`;
+  document.getElementById('reviewTitle').textContent = verified ? 'Fact-checked against your CV' : built ? 'Built around the job description' : 'Please review before sending';
+  document.getElementById('reviewSub').textContent = built
+    ? 'Every section was rewritten for this job. Lines that are not in your original CV are listed below. If you want to change anything, use Edit.'
+    : !verified
     ? 'The automatic fact check could not finish. Read the CV carefully and use Edit to fix anything.'
     : removed.length
       ? `${removed.length} detail${removed.length === 1 ? ' was' : 's were'} removed or reworded because ${removed.length === 1 ? 'it is' : 'they are'} not in your original CV.`
@@ -1131,6 +1210,7 @@ function showFit(fit) {
   const level = fit?.level || 'strong';
   box.hidden = level === 'strong';
   if (box.hidden) return;
+  box.querySelector('.fit-hint').hidden = false;
 
   const role = fit.target_role || 'this job';
   box.classList.toggle('partial', level === 'partial');
@@ -1149,6 +1229,44 @@ function showFit(fit) {
     chip.append(document.createTextNode(item));
     missing.appendChild(chip);
   });
+}
+
+/** Score the tailored CV against the job's requirements; runs after the CV is shown so it never delays it. */
+async function refreshMatch() {
+  const result = S.tailoredResult;
+  if (!result) return;
+  const after = document.getElementById('scoreAfter');
+  after.innerHTML = '<span class="spin" style="width:14px;height:14px;display:inline-block;vertical-align:middle"></span>';
+  renderSkillLoading('Checking the tailored CV against the job…');
+  try {
+    const match = await postJson(CV_MATCH_URL, { result });
+    if (S.tailoredResult !== result) return;
+    S.matchScore = Number.isInteger(match.score) ? match.score : null;
+    S.matchedSkills = match.matched || [];
+    S.missingSkills = match.missing || [];
+    showMatchScore(S.matchScore ?? 0, S.matchedSkills, S.missingSkills, 'Job requirements met: tailored CV', match.requirements || []);
+    after.textContent = Number.isInteger(S.matchScore) ? `${S.matchScore}%` : '--';
+  } catch (error) {
+    if (S.tailoredResult !== result) return;
+    after.textContent = '--';
+    renderSkillLoading('Could not check the requirements right now.', false);
+  }
+}
+
+/** Lines added to match the job (fill-gaps mode), for the candidate to check. */
+function showAdded(added) {
+  const note = document.getElementById('addedNote');
+  note.hidden = added.length === 0;
+  document.getElementById('addedTitle').textContent = `Added to match the job (${added.length})`;
+  const list = document.getElementById('addedList');
+  list.innerHTML = '';
+  added.forEach(item => {
+    const li = document.createElement('li');
+    li.textContent = item;
+    list.appendChild(li);
+  });
+  // When the CV was built around the job, the career-change hint about ticking requirements is not needed.
+  if (added.length) document.querySelector('#fitNote .fit-hint').hidden = true;
 }
 
 function hideReview() {
@@ -1428,14 +1546,8 @@ async function saveEditor() {
     S.tailoredPreviewUrl = appUrl(data.previewUrl);
     S.tailoredDownloadUrl = appUrl(data.downloadUrl);
     setPreviewSrc(S.tailoredPreviewUrl);
-    if (data.match) {
-      S.matchScore = Number.isInteger(data.match.score) ? data.match.score : S.matchScore;
-      S.matchedSkills = data.match.matched || [];
-      S.missingSkills = data.match.missing || [];
-      showMatchScore(S.matchScore ?? 0, S.matchedSkills, S.missingSkills, 'Skills match: tailored CV');
-      document.getElementById('scoreAfter').textContent = Number.isInteger(S.matchScore) ? `${S.matchScore}%` : '--';
-    }
     closeEditor();
+    refreshMatch();
     toast('success', 'Changes saved.');
   } catch (error) {
     showEditorError(error.message || 'Could not save your changes.');

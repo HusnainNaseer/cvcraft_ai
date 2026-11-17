@@ -18,13 +18,15 @@ Route::get('/csrf-token', fn () => response()->json(['token' => csrf_token()])
 Route::post('/job-description/fetch', [JobDescriptionController::class, 'fetch'])
     ->middleware('throttle:15,1')->name('job-description.fetch');
 Route::post('/job-description/skills', [JobDescriptionController::class, 'skills'])
-    ->middleware('throttle:60,1')->name('job-description.skills');
+    ->middleware('throttle:30,1')->name('job-description.skills');
 
 // Tailored CV
 Route::post('/cv/tailor', [CvController::class, 'tailor'])
     ->middleware('throttle:10,1')->name('cv.tailor');
 Route::post('/cv/fact-check', [CvController::class, 'factCheck'])
     ->middleware('throttle:20,1')->name('cv.fact-check');
+Route::post('/cv/match', [CvController::class, 'match'])
+    ->middleware('throttle:30,1')->name('cv.match');
 Route::post('/cv/photo', [CvController::class, 'updatePhoto'])->name('cv.photo');
 Route::post('/cv/theme', [CvController::class, 'updateTheme'])->name('cv.theme');
 Route::get('/cv/content', [CvController::class, 'content'])->name('cv.content');

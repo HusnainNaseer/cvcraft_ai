@@ -7,11 +7,10 @@ use App\Services\ApplicationContact;
 use App\Services\CvContent;
 use App\Services\CvUploadParser;
 use App\Services\GeminiService;
-use App\Services\SkillMatcher;
+use App\Services\RequirementMatcher;
 use App\Services\TailoredCvRepository;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -27,19 +26,11 @@ class CvController extends Controller
         'gold' => ['primary' => '#A16207', 'primary_light' => '#FBBF24'],
     ];
 
-    /** File types Gemini can read directly, sent alongside the extracted text. */
-    private const GEMINI_FILE_TYPES = [
-        'pdf' => 'application/pdf',
-        'txt' => 'text/plain',
-        'html' => 'text/html',
-        'htm' => 'text/html',
-    ];
-
     public function __construct(private readonly TailoredCvRepository $results)
     {
     }
 
-    public function tailor(Request $request, CvUploadParser $parser, GeminiService $gemini, SkillMatcher $matcher): JsonResponse
+    public function tailor(Request $request, CvUploadParser $parser, GeminiService $gemini, RequirementMatcher $requirements): JsonResponse
     {
         $validated = $request->validate([
             'jobDescription' => ['required', 'string', 'min:50', 'max:30000'],
@@ -54,6 +45,11 @@ class CvController extends Controller
             'job.applyUrl' => ['nullable', 'url', 'max:2048'],
             'job.emails' => ['nullable', 'array', 'max:10'],
             'job.emails.*' => ['email'],
+            // Job requirements the candidate confirmed are true for them (the tick boxes).
+            'confirmed' => ['nullable', 'array', 'max:15'],
+            'confirmed.*' => ['string', 'max:80'],
+            // Build the CV around the job, adding what it asks for (each added line is listed for the user).
+            'fillGaps' => ['nullable', 'boolean'],
         ]);
 
         set_time_limit(180);
@@ -65,12 +61,28 @@ class CvController extends Controller
 
         $uploadedFile = $request->file('cv');
         $cvText = $parser->extract($uploadedFile);
-        $filePart = $this->geminiFilePart($uploadedFile);
+        $filePart = $parser->aiFilePart($uploadedFile);
 
         if (Str::length($cvText) < 80 && ! $filePart) {
             return response()->json([
                 'message' => 'Could not read enough text from the uploaded CV. Please upload a text-based PDF, DOCX, HTML, or TXT CV.',
             ], 422);
+        }
+
+        $confirmed = $this->confirmedItems($validated['confirmed'] ?? []);
+        $autoAdded = [];
+        if ($request->boolean('fillGaps')) {
+            // "Fill gaps from the job": every requirement the CV does not show is included as if the candidate had
+            // ticked it. The requirement list is usually already cached from the live match, so this is quick.
+            $match = $requirements->match(
+                $validated['jobDescription'],
+                Str::length($cvText) < 30 ? '' : $cvText,
+                Str::length($cvText) < 30 ? $filePart : null
+            );
+            if ($match['source'] === 'ai') {
+                $autoAdded = array_values(array_diff($match['missing'], $confirmed));
+                $confirmed = [...$confirmed, ...$autoAdded];
+            }
         }
 
         try {
@@ -79,7 +91,9 @@ class CvController extends Controller
                 $cvText,
                 $layout,
                 $validated['tone'] ?? 'professional',
-                $filePart
+                $filePart,
+                $confirmed,
+                $request->boolean('fillGaps')
             );
         } catch (GeminiException $e) {
             return response()->json(['message' => $e->getMessage()], 503);
@@ -90,6 +104,7 @@ class CvController extends Controller
         // Pasted job text has no title or company: use what the AI read from the description.
         $job['title'] = $job['title'] ?: $tailored['fit']['target_role'];
         $job['company'] = $job['company'] ?: $tailored['fit']['company'];
+        $job['fillGaps'] = $request->boolean('fillGaps');
         $token = $this->results->create($cv, $job, $tailored['source']);
 
         Log::info('CV tailored', [
@@ -107,7 +122,8 @@ class CvController extends Controller
                 // Removed by the instant checks; the AI review follows via cv.fact-check.
                 'removed' => $tailored['removed'],
                 'fit' => $tailored['fit'],
-                'match' => $matcher->match($validated['jobDescription'], $this->searchableText($cv)),
+                // Requirements added from the job, then any other lines the AI added: all for the user to check.
+                'added' => array_values(array_unique([...$autoAdded, ...$tailored['added']])),
                 'application' => ApplicationContact::resolve($job),
             ],
         ]);
@@ -116,7 +132,7 @@ class CvController extends Controller
     /**
      * Second stage of tailoring: the AI reviews every rewritten sentence against the original CV.
      */
-    public function factCheck(Request $request, GeminiService $gemini, SkillMatcher $matcher): JsonResponse
+    public function factCheck(Request $request, GeminiService $gemini): JsonResponse
     {
         $validated = $request->validate([
             'result' => ['required', 'string', 'regex:'.TailoredCvRepository::TOKEN_PATTERN],
@@ -130,6 +146,14 @@ class CvController extends Controller
         }
 
         $description = (string) ($record['job']['description'] ?? '');
+        if (! empty($record['job']['fillGaps'])) {
+            // Built around the job on purpose: the added lines are listed for the candidate instead of removed.
+            return response()->json([
+                'success' => true,
+                ...$this->resultUrls($validated['result']),
+                'factCheck' => ['verified' => false, 'removed' => [], 'mode' => 'fill'],
+            ]);
+        }
         $checked = $gemini->factCheckCv($record['cv'], $record['source'], $description);
 
         if ($checked['cv'] !== $record['cv']) {
@@ -146,8 +170,32 @@ class CvController extends Controller
             'success' => true,
             ...$this->resultUrls($validated['result']),
             'factCheck' => $checked['factCheck'],
-            'match' => $description !== '' ? $matcher->match($description, $this->searchableText($checked['cv'])) : null,
         ]);
+    }
+
+    /**
+     * How well the tailored CV covers the job's requirements (AI, any field). Called after the CV is shown,
+     * so the score never delays the CV.
+     */
+    public function match(Request $request, RequirementMatcher $matcher): JsonResponse
+    {
+        $validated = $request->validate([
+            'result' => ['required', 'string', 'regex:'.TailoredCvRepository::TOKEN_PATTERN],
+        ]);
+
+        set_time_limit(90);
+
+        $record = $this->results->find($validated['result']);
+        if (! $record) {
+            return response()->json(['message' => 'Tailored CV not found. Please generate it again.'], 404);
+        }
+
+        $description = (string) ($record['job']['description'] ?? '');
+        if ($description === '') {
+            return response()->json(['message' => 'This CV has no job description to compare with.'], 422);
+        }
+
+        return response()->json(['success' => true, ...$matcher->match($description, $this->searchableText($record['cv']))]);
     }
 
     public function updatePhoto(Request $request): JsonResponse
@@ -237,15 +285,17 @@ class CvController extends Controller
         return response()->json([
             'success' => true,
             ...$this->resultUrls($validated['result']),
-            'match' => $this->matchFor($record['job'], $cv),
         ]);
     }
 
-    private function matchFor(array $job, array $cv): ?array
+    /**
+     * @return string[]
+     */
+    private function confirmedItems(array $items): array
     {
-        $description = (string) ($job['description'] ?? '');
+        $clean = array_map(fn ($item) => trim(preg_replace('/\s+/', ' ', strip_tags((string) $item)) ?? ''), $items);
 
-        return $description !== '' ? app(SkillMatcher::class)->match($description, $this->searchableText($cv)) : null;
+        return array_values(array_unique(array_filter($clean, fn ($item) => $item !== '')));
     }
 
     private function resultUrls(string $token): array
@@ -282,22 +332,6 @@ class CvController extends Controller
         $decoded = is_file($path) ? json_decode((string) file_get_contents($path), true) : null;
 
         return is_array($decoded) ? $decoded : null;
-    }
-
-    private function geminiFilePart(UploadedFile $file): ?array
-    {
-        $mimeType = self::GEMINI_FILE_TYPES[strtolower($file->getClientOriginalExtension())] ?? null;
-        $bytes = $mimeType ? $file->get() : null;
-
-        if (! $bytes) {
-            return null;
-        }
-
-        return [
-            'mime_type' => $mimeType,
-            'data' => base64_encode($bytes),
-            'name' => $file->getClientOriginalName(),
-        ];
     }
 
     private function searchableText(array $cv): string

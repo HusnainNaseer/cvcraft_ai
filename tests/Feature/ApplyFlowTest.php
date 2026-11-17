@@ -67,14 +67,12 @@ class ApplyFlowTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('data.application.method', 'email')
             ->assertJsonPath('data.application.email', 'careers@acme.io')
-            ->assertJsonPath('data.match.missing', ['Docker'])
             ->assertJsonPath('data.removed', []);
 
         $token = $response->json('data.result');
         $this->postJson('/cv/fact-check', ['result' => $token])
             ->assertOk()
-            ->assertJsonPath('factCheck', ['verified' => true, 'removed' => []])
-            ->assertJsonPath('match.missing', ['Docker']);
+            ->assertJsonPath('factCheck', ['verified' => true, 'removed' => []]);
         $record = app(TailoredCvRepository::class)->find($token);
 
         $this->assertSame('Acme', $record['job']['company']);
@@ -190,7 +188,6 @@ class ApplyFlowTest extends TestCase
         $check = $this->postJson('/cv/fact-check', ['result' => $response->json('data.result')])->assertOk();
         $this->assertTrue($check->json('factCheck.verified'));
         $this->assertNotEmpty($check->json('factCheck.removed'));
-        $this->assertContains('Docker', $check->json('match.missing'));
 
         $record = app(TailoredCvRepository::class)->find($response->json('data.result'));
         $cv = $record['cv'];
@@ -202,7 +199,6 @@ class ApplyFlowTest extends TestCase
         $this->assertSame(['PHP', 'Laravel'], $cv['skills'][0]['items']);
         $this->assertSame('', $cv['languages']['mother']);
         $this->assertSame('', $cv['languages']['other'][0]['listening']);
-        $this->assertContains('Docker', $response->json('data.match.missing'), 'the gap is shown to the user, not hidden');
         $this->assertSame('', $record['cv']['about']);
     }
 

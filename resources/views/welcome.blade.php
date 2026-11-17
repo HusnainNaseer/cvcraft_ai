@@ -65,7 +65,15 @@
             <strong id="fitTitle"></strong>
             <p id="fitText"></p>
             <div class="fit-missing" id="fitMissing"></div>
-            <p class="fit-hint">Have this experience? Add it with <button type="button" class="link-btn" onclick="openEditor()">Edit</button> before you apply.</p>
+            <p class="fit-hint">Is any of this true for you? <button type="button" class="link-btn" onclick="showRequirements()">Tick it under Job requirements</button>, then press <strong>Tailor again</strong>.</p>
+          </div>
+        </div>
+        <div class="added-note" id="addedNote" hidden>
+          <i class="fas fa-pen-ruler" aria-hidden="true"></i>
+          <div>
+            <strong id="addedTitle">Added to match the job</strong>
+            <p>These are not in your original CV. If you want to change anything, use <button type="button" class="link-btn" onclick="openEditor()">Edit</button> before you send.</p>
+            <ul class="added-list" id="addedList"></ul>
           </div>
         </div>
         <div class="review-scores" id="reviewScores">
@@ -104,6 +112,10 @@
             <button class="icon-btn" type="button" onclick="replaceFile()" aria-label="Replace CV" title="Replace"><i class="fas fa-arrows-rotate"></i></button>
             <button class="icon-btn" type="button" onclick="removeFile()" aria-label="Remove CV" title="Remove"><i class="fas fa-trash-can"></i></button>
           </div>
+          <div class="send-error upload-warning" id="uploadWarning" role="alert" hidden>
+            <i class="fas fa-triangle-exclamation" aria-hidden="true"></i>
+            <span>This file is a CV <strong>downloaded from CVCraft</strong>, not your original. Tailoring it again gives weaker results. <button type="button" class="link-btn" onclick="replaceFile()">Upload your original CV</button></span>
+          </div>
         </li>
 
         <!-- Step 2: Job -->
@@ -138,14 +150,16 @@
 
           <div class="match-card" id="matchCard" aria-live="polite">
             <div class="match-top">
-              <span class="match-label" id="matchLabelText">Skills match</span>
+              <span class="match-label" id="matchLabelText">Job requirements met</span>
               <span class="match-val" id="matchPct">--</span>
             </div>
             <div class="match-bar"><div class="match-fill" id="matchFill"></div></div>
+            <p class="confirm-hint" id="confirmHint" hidden><i class="fas fa-hand-pointer" aria-hidden="true"></i> Tick the requirements that are true for you. They will be added to your CV.</p>
             <div class="match-chips" id="matchChips"></div>
+            <p class="confirm-count" id="confirmCount" hidden></p>
             <div class="match-legend" id="matchLegend" hidden>
-              <span><i class="fas fa-check" aria-hidden="true"></i> In your CV</span>
-              <span><i class="fas fa-minus" aria-hidden="true"></i> Not in your CV</span>
+              <span><i class="fas fa-check" aria-hidden="true"></i> Your CV shows this</span>
+              <span><i class="far fa-square" aria-hidden="true"></i> Not shown yet: tick if true</span>
             </div>
           </div>
         </li>
@@ -167,6 +181,10 @@
             <button class="tone-opt" type="button" role="radio" aria-checked="false" data-tone="detailed" onclick="selectTone(this)">
               <span class="tone-name">Detailed</span><span class="tone-desc">More context per role</span>
             </button>
+          </div>
+          <div class="fill-gaps">
+            <label class="switch"><input type="checkbox" id="fillGaps" checked> <span><strong>Fill gaps from the job</strong></span></label>
+            <p class="field-hint">Rewrites every section around the job description and fills what your CV is missing. Everything added is listed for you, and you can change anything with Edit.</p>
           </div>
         </li>
       </ol>

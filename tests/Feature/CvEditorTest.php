@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Services\TailoredCvRepository;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 class CvEditorTest extends TestCase
@@ -15,6 +16,9 @@ class CvEditorTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
+        Http::preventStrayRequests();
+        // No AI in these tests: the requirement match falls back to keyword matching.
+        config(['services.gemini.api_key' => null, 'services.gemini.fallback_api_key' => null, 'services.gemini.api_keys' => null]);
         $this->results = app(TailoredCvRepository::class);
     }
 
@@ -57,7 +61,10 @@ class CvEditorTest extends TestCase
             ],
         ])->assertOk();
 
-        $this->assertSame([], $response->json('match.missing'), 'Docker now appears in the CV');
+        $this->postJson('/cv/match', ['result' => $token])
+            ->assertOk()
+            ->assertJsonPath('source', 'keywords')
+            ->assertJsonPath('missing', [], 'Docker now appears in the CV');
 
         $cv = $this->results->find($token)['cv'];
         $this->assertSame('Jane Doe', $cv['personal']['name']);
