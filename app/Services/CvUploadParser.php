@@ -27,7 +27,34 @@ class CvUploadParser
             default => '',
         };
 
-        return $this->cleanText($text);
+        $text = $this->cleanText($text);
+
+        // PDFs that store text through embedded font maps (most exported from Word, Google Docs, Canva or a
+        // browser) come out of the simple PDF reader as symbol soup. Unreadable text is worse than none: the AI
+        // reads the original file instead and returns a transcript that is used for the fact checks.
+        return in_array($extension, ['pdf', 'doc'], true) && ! $this->looksLikeText($text) ? '' : $text;
+    }
+
+    /**
+     * True when most tokens are real words rather than PDF glyph codes.
+     */
+    public function looksLikeText(string $text): bool
+    {
+        $tokens = preg_split('/\s+/u', trim($text), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+        if (count($tokens) < 20) {
+            return count($tokens) > 0;
+        }
+
+        $words = 0;
+        foreach ($tokens as $token) {
+            $token = trim($token, '.,;:()[]"\'!?|•–—-');
+            // A word: two or more letters, containing a vowel (Latin scripts) or any non-Latin letter.
+            if (preg_match('/^\p{L}[\p{L}\'’.-]+$/u', $token) && preg_match('/[aeiouyAEIOUY]|[^\x00-\x7F]/u', $token)) {
+                $words++;
+            }
+        }
+
+        return $words / count($tokens) >= 0.45;
     }
 
     private function extractHtml(string $html): string

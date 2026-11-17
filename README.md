@@ -49,7 +49,7 @@ Fill in `.env`:
 | Key | Purpose |
 | --- | --- |
 | `GEMINI_API_KEY`, `GEMINI_API_KEYS` | Gemini keys; extra keys are used when one hits its rate limit |
-| `GEMINI_MODELS` | Models tried in order (default `gemini-flash-latest,gemini-flash-lite-latest`) |
+| `GEMINI_MODELS` | Models tried in order (default `gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.5-flash,gemini-flash-latest`). Prefer pinned models first: the `-latest` aliases point at the newest, busiest model |
 | `GEMINI_THINKING_LEVEL` | `low` keeps responses fast; leave empty for models without thinking support |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` | Gmail sending (see below) |
 | `CHROME_PATH` | Only if Chrome/Edge is installed somewhere unusual |

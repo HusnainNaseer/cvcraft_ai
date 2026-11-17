@@ -3,7 +3,10 @@
 namespace App\Services;
 
 use App\Exceptions\GeminiException;
+use Illuminate\Contracts\Cache\Repository;
 use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -14,6 +17,9 @@ class GeminiService
 
     /** Total seconds a single generate call may spend across all keys and models. */
     private const TIME_BUDGET = 150;
+
+    /** How long a model that was overloaded, hung or retired is tried last, so later requests skip it. */
+    private const COOLDOWN_SECONDS = 120;
 
     private array $apiKeys;
 
@@ -45,7 +51,7 @@ class GeminiService
      * against the original CV: first with deterministic checks (CvFactGuard), then with an AI review of the
      * free-text sentences.
      *
-     * @return array{cv: array, reasoning: string, source: string, factCheck: array{verified: bool, removed: string[]}}
+     * @return array{cv: array, reasoning: string, source: string, removed: string[], fit: array}
      *
      * @throws GeminiException
      */
@@ -79,7 +85,26 @@ class GeminiService
             ];
         }
 
-        $parsed = $this->generateJson($parts, 90);
+        try {
+            $parsed = $this->generateJson($parts, 60);
+        } catch (GeminiException $e) {
+            // The model could not read the attached file (e.g. a damaged PDF). Our own text extraction may still
+            // be good enough, so try once more from the text alone.
+            if ($e->getCode() !== 400 || ! $uploadedFile || mb_strlen(trim($uploadedCvText)) < self::MIN_SOURCE_FOR_CHECKS) {
+                throw $e;
+            }
+
+            Log::warning('Gemini rejected the CV file; retrying with extracted text only');
+            $wantsTranscript = false;
+            $parsed = $this->generateJson([[
+                'text' => $this->buildUploadedCvPrompt(
+                    $jobDescription,
+                    $uploadedCvText,
+                    $this->emptySchemaFromTemplate($layoutTemplate),
+                    $tone
+                ),
+            ]], 60);
+        }
         $candidate = $parsed['cv'] ?? $parsed;
 
         if (! is_array($candidate)) {
@@ -87,20 +112,53 @@ class GeminiService
         }
 
         $transcript = $wantsTranscript && is_string($parsed['source_text'] ?? null) ? $parsed['source_text'] : '';
-        $source = trim($uploadedCvText."\n".$transcript);
+        // Transcript first: the fact checks read a limited amount of text, and it is the cleaner copy.
+        $source = trim($transcript."\n".$uploadedCvText);
         $cv = $this->normalizeGeneratedCv($candidate, $layoutTemplate);
 
+        // Fast, deterministic checks now; the slower AI review of sentences is a separate step (factCheckCv),
+        // so the user sees real progress between the two.
+        $removed = [];
+        if (mb_strlen($source) >= self::MIN_SOURCE_FOR_CHECKS) {
+            ['cv' => $cv, 'removed' => $removed] = $this->guard->enforce($cv, $source);
+        }
+
         return [
+            'cv' => $cv,
             'reasoning' => is_string($parsed['reasoning'] ?? null) ? $parsed['reasoning'] : '',
             'source' => $source,
-            ...$this->factCheck($cv, $source, $jobDescription),
+            'removed' => $removed,
+            'fit' => $this->normalizeFit($parsed['fit'] ?? null),
         ];
     }
 
     /**
+     * @return array{level: string, target_role: string, company: string, missing: string[], note: string}
+     */
+    private function normalizeFit(mixed $fit): array
+    {
+        $fit = is_array($fit) ? $fit : [];
+        $level = strtolower($this->textValue($fit['level'] ?? ''));
+
+        return [
+            'level' => in_array($level, ['strong', 'partial', 'weak'], true) ? $level : 'partial',
+            'target_role' => Str::limit($this->textValue($fit['target_role'] ?? ''), 120, ''),
+            'company' => Str::limit($this->textValue($fit['company'] ?? ''), 120, ''),
+            'missing' => array_slice(array_values(array_filter(array_map(
+                fn ($item) => Str::limit($this->textValue($item), 80, ''),
+                is_array($fit['missing'] ?? null) ? $fit['missing'] : []
+            ))), 0, 6),
+            'note' => Str::limit($this->textValue($fit['note'] ?? ''), 300, ''),
+        ];
+    }
+
+    /**
+     * AI review of the tailored CV's sentences against the original CV, followed by the deterministic checks
+     * again. Never throws: when the review cannot run, the CV is returned unchanged and marked unverified.
+     *
      * @return array{cv: array, factCheck: array{verified: bool, removed: string[]}}
      */
-    private function factCheck(array $cv, string $source, string $jobDescription): array
+    public function factCheckCv(array $cv, string $source, string $jobDescription): array
     {
         if (mb_strlen($source) < self::MIN_SOURCE_FOR_CHECKS) {
             Log::warning('CV fact check skipped: not enough source text');
@@ -108,26 +166,23 @@ class GeminiService
             return ['cv' => $cv, 'factCheck' => ['verified' => false, 'removed' => []]];
         }
 
-        $guarded = $this->guard->enforce($cv, $source);
-        $cv = $guarded['cv'];
-        $removed = $guarded['removed'];
-
         try {
             $review = $this->verifyClaims($this->guard->claims($cv), $source, $jobDescription);
             $checked = $this->guard->applyVerdicts($cv, $review['verdicts'], $source);
-            $cv = $checked['cv'];
-            $removed = [...$removed, ...$checked['removed']];
-            $verified = $review['complete'];
         } catch (GeminiException $e) {
             Log::warning('CV fact check by AI failed; deterministic checks only', ['error' => $e->getMessage()]);
-            $verified = false;
+
+            return ['cv' => $cv, 'factCheck' => ['verified' => false, 'removed' => []]];
         }
 
-        if ($removed !== []) {
-            Log::info('CV fact check corrected the tailored CV', ['changes' => count($removed)]);
+        if ($checked['removed'] !== []) {
+            Log::info('CV fact check corrected the tailored CV', ['changes' => count($checked['removed'])]);
         }
 
-        return ['cv' => $cv, 'factCheck' => ['verified' => $verified, 'removed' => array_values(array_unique($removed))]];
+        return [
+            'cv' => $checked['cv'],
+            'factCheck' => ['verified' => $review['complete'], 'removed' => array_values(array_unique($checked['removed']))],
+        ];
     }
 
     /**
@@ -181,7 +236,8 @@ CLAIMS:
 PROMPT;
 
         // A healthy check takes 10-20s; give up sooner on a hung model so the fallback model gets its turn.
-        $response = $this->generateJson([['text' => $prompt]], 35);
+        // Capped so a struggling AI service gives a "please review" result instead of a two-minute wait.
+        $response = $this->generateJson([['text' => $prompt]], 35, budget: 45);
         $results = $response['results'] ?? null;
         if (! is_array($results)) {
             throw new GeminiException('The fact checker returned no results.');
@@ -231,7 +287,7 @@ PAGE TEXT:
 {$pageText}
 PROMPT;
 
-        $job = $this->generateJson([['text' => $prompt]], 45, preferFastModel: true);
+        $job = $this->generateJson([['text' => $prompt]], 45);
 
         return [
             'is_job_posting' => (bool) ($job['is_job_posting'] ?? false),
@@ -285,7 +341,7 @@ JOB DESCRIPTION:
 {$jobDescription}
 PROMPT;
 
-        $email = $this->generateJson([['text' => $prompt]], 45, preferFastModel: true);
+        $email = $this->generateJson([['text' => $prompt]], 45);
         $subject = $this->textValue($email['subject'] ?? '');
         $body = is_string($email['body'] ?? null) ? trim($email['body']) : '';
 
@@ -356,11 +412,15 @@ PROMPT;
     /**
      * Send one prompt and decode the JSON answer, rotating keys and models on failure.
      *
-     * @param  bool  $preferFastModel  try the models in reverse order (lightest first) for short tasks
+     * Models are tried in the configured order (fastest first), except that a model which recently failed for
+     * everyone (overloaded, hung or retired) is tried last for a couple of minutes.
+     *
+     * @param  int  $timeout  seconds to wait for one model's answer
+     * @param  int  $budget  seconds this call may spend in total across keys and models
      *
      * @throws GeminiException
      */
-    private function generateJson(array $parts, int $timeout, bool $preferFastModel = false): array
+    private function generateJson(array $parts, int $timeout, int $budget = self::TIME_BUDGET): array
     {
         if (! $this->isConfigured()) {
             throw new GeminiException('Gemini API key is not configured. Set GEMINI_API_KEY in .env.');
@@ -372,8 +432,9 @@ PROMPT;
         }
 
         $payload = ['contents' => [['parts' => $parts]], 'generationConfig' => $generationConfig];
-        $models = $preferFastModel ? array_reverse($this->models) : $this->models;
-        $deadline = microtime(true) + self::TIME_BUDGET;
+        $cooling = array_filter($this->models, fn (string $model) => $this->cooldowns()->has($this->cooldownKey($model)));
+        $models = [...array_diff($this->models, $cooling), ...$cooling];
+        $deadline = microtime(true) + $budget;
         $lastStatus = null;
         $lastModel = end($models);
 
@@ -389,6 +450,7 @@ PROMPT;
                     break 2;
                 }
 
+                $startedAt = microtime(true);
                 try {
                     $response = Http::timeout(min($timeout, $remaining))
                         ->connectTimeout(10)
@@ -396,6 +458,7 @@ PROMPT;
                         ->post(self::API_BASE.$model.':generateContent', $payload);
                 } catch (ConnectionException $e) {
                     $lastStatus = 'timeout';
+                    $this->coolDown($model);
                     Log::warning('Gemini request failed to connect', ['model' => $model, 'key' => $keyIndex + 1, 'error' => $e->getMessage()]);
 
                     continue;
@@ -403,7 +466,24 @@ PROMPT;
 
                 if (! $response->successful()) {
                     $lastStatus = $response->status();
-                    Log::warning('Gemini request rejected', ['model' => $model, 'key' => $keyIndex + 1, 'status' => $lastStatus]);
+                    Log::warning('Gemini request rejected', [
+                        'model' => $model,
+                        'key' => $keyIndex + 1,
+                        'status' => $lastStatus,
+                        'reason' => Str::limit((string) $response->json('error.message'), 160),
+                    ]);
+
+                    if ($this->isModelWideFailure($lastStatus)) {
+                        $this->coolDown($model);
+                    }
+
+                    if ($lastStatus === 400 && $this->isKeyProblem($response)) {
+                        $lastStatus = 401;
+                    } elseif ($lastStatus === 400) {
+                        // The request itself is invalid (e.g. an unreadable file); every key and model would reject it.
+                        $lastStatus = 'bad-request';
+                        break 2;
+                    }
 
                     continue;
                 }
@@ -412,6 +492,15 @@ PROMPT;
                 $decoded = is_string($text) ? json_decode($this->extractJson($text), true) : null;
 
                 if (is_array($decoded)) {
+                    $this->cooldowns()->forget($this->cooldownKey($model));
+                    Log::info('Gemini call', [
+                        'model' => $model,
+                        'seconds' => round(microtime(true) - $startedAt, 1),
+                        'input_tokens' => $response->json('usageMetadata.promptTokenCount'),
+                        'output_tokens' => $response->json('usageMetadata.candidatesTokenCount'),
+                        'thinking_tokens' => $response->json('usageMetadata.thoughtsTokenCount'),
+                    ]);
+
                     return $decoded;
                 }
 
@@ -423,12 +512,42 @@ PROMPT;
             }
         }
 
-        throw new GeminiException($this->failureMessage($lastStatus));
+        throw new GeminiException($this->failureMessage($lastStatus), $lastStatus === 'bad-request' ? 400 : 0);
+    }
+
+    private function coolDown(string $model): void
+    {
+        $this->cooldowns()->put($this->cooldownKey($model), true, self::COOLDOWN_SECONDS);
+    }
+
+    /**
+     * Local file cache: this is checked on every Gemini call, so it must not cost a database round trip.
+     */
+    private function cooldowns(): Repository
+    {
+        return Cache::store(app()->runningUnitTests() ? 'array' : 'file');
+    }
+
+    private function cooldownKey(string $model): string
+    {
+        return 'gemini-cooldown:'.$model;
+    }
+
+    /**
+     * Gemini answers an invalid or expired API key with HTTP 400 too; that one is worth trying the next key for.
+     */
+    private function isKeyProblem(Response $response): bool
+    {
+        $reasons = array_column(array_filter((array) $response->json('error.details', []), 'is_array'), 'reason');
+
+        return in_array('API_KEY_INVALID', $reasons, true)
+            || str_contains(strtolower((string) $response->json('error.message')), 'api key');
     }
 
     private function isModelWideFailure(int|string|null $status): bool
     {
-        return $status === 'timeout' || (is_int($status) && $status >= 500);
+        // 404: the model is retired or unavailable to this project; other keys will not help.
+        return $status === 'timeout' || $status === 404 || (is_int($status) && $status >= 500);
     }
 
     private function failureMessage(int|string|null $status): string
@@ -438,6 +557,7 @@ PROMPT;
             $status === 429 => 'Gemini rate limit reached on every configured key. Wait a minute and try again.',
             $status === 'timeout' => 'Gemini did not respond in time. Check your internet connection and try again.',
             $status === 'invalid-json' => 'The AI returned an unreadable answer. Please try again.',
+            $status === 'bad-request' => 'The AI could not read this CV file. Please upload it again as a PDF, DOCX or TXT file.',
             default => 'Gemini is temporarily unavailable. Please try again in a moment.',
         };
     }
@@ -505,9 +625,21 @@ You are tailoring a candidate's CV for a job. Tailoring means SELECTING, ORDERIN
 
 Return ONLY valid JSON, no markdown fences or comments, in exactly this shape:
 {
+  "fit": {
+    "level": "strong" | "partial" | "weak",
+    "target_role": "the job title from the job description",
+    "company": "the hiring company from the job description, or empty",
+    "missing": ["requirements of the job that the CV does not show (max 6, short)"],
+    "note": "one sentence for the candidate about how well the CV fits this job"
+  },
   "cv": { ...CV JSON using the provided schema... },
   "reasoning": "Brief summary of what was emphasised or reordered and why"{$transcriptShape}
 }
+
+FIRST, JUDGE THE FIT between the CV and the job:
+- "strong": the candidate's experience is in the same field and covers most requirements.
+- "partial": same or neighbouring field, but important requirements are missing.
+- "weak": a different field (e.g. a software developer applying for a call-centre or sales job).
 
 THE TRUTH RULE (overrides every other instruction):
 - The uploaded CV is the ONLY source of facts about the candidate. {$fileNote}
@@ -518,14 +650,38 @@ THE TRUTH RULE (overrides every other instruction):
 - Keep each job title exactly as the CV gives it.
 - If a skill the job asks for is not in the CV, leave it out. Missing skills are shown to the user separately; your job is not to hide gaps.{$transcriptRule}
 
-HOW TO TAILOR (within the truth rule):
+THE COMPLETENESS RULE (for "strong" and "partial" fit; as important as the truth rule):
+- The tailored CV must contain EVERYTHING the uploaded CV contains. Keep every job, every bullet point and achievement, every number and metric, every named product, client, tool, technology, team size, link, grade, project, certificate, language and interest.
+- Tailoring changes ORDER, EMPHASIS and WORDING only. Never drop or generalise a fact because it seems less relevant: keep "Integrated Stripe and JazzCash" as it is, never "integrated payment gateways".
+- One CV bullet point becomes at least one highlight. You may split a long point, never merge points away.
+- Every skill named anywhere in the CV goes into the skills section.
+- The tone changes how things are worded, not what is included.
+
+CAREER-CHANGE MODE (for "weak" fit, replaces the completeness rule; the truth rule still applies):
+- Reframe the SAME true facts for the target role, so the CV reads as a strong application for THIS job, not for the candidate's old field.
+- personal.headline: a short line for the target role built only from CV facts, e.g. "Customer-focused professional · Fluent English (C1) · 5 years working with clients and teams". Never claim the target job title or experience the CV does not show.
+- "about": lead with what this job needs that the CV truly shows (language level, communication, working with clients or customers, teamwork, reliability, training others, documentation, problem solving), then one sentence on the background.
+- Skills: put the transferable skills this job needs first, in a group labelled for the job (e.g. "Communication & Customer Skills"), using only skills the CV shows or clearly evidences (e.g. "mentored two developers" evidences "training others"). Put the old field's tools last in one compact group (e.g. "Technical background").
+- Experience: keep EVERY job with its employer, title and dates (never create gaps). Rewrite each role to lead with the transferable parts (dealing with clients, project managers or users; explaining things; teamwork; deadlines; responsibility). Keep at most 2-3 highlights per role and condense purely technical detail that this job does not care about into one short line.
+- Keep education, certifications, languages and interests. Languages often matter most in these roles, so keep levels exactly as the CV gives them.
+
+HOW TO TAILOR (within the rules above):
 - Put the experience, projects and skills most relevant to the job first, and use the job's terminology only where it names the same thing the CV does (e.g. CV "REST APIs" may be written as "REST API development").
-- Rewrite summaries and highlights so the relevant facts stand out; you may merge, shorten or split bullet points, but each must still be backed by the CV.
-- The "about" section must summarise only what the CV shows.
+- Rewrite highlights so the job-relevant facts stand out, leading with the action and the result.
+- For each role write a one-sentence "summary" of what the CV says the person did there (scope, team, product), using only CV facts.
+- "about" is a 3-4 sentence professional summary built from the CV, leading with what matters most for this job.
 - Group skills like the template ("Technical", "Tools", "Professional", "Soft skills"), each group an items array.
 - Include every section the CV has (languages, certifications, projects, driving licence, hobbies, interests), even when not relevant to the job. Do not create items for sections the CV does not have.
-- Write interests as one short paragraph, only from interests the CV mentions.
 - Do not copy anything from the empty schema's sample values.
+
+WHERE THINGS GO:
+- personal.headline: one short line under the name, aimed at the target job, made only of CV facts (for every fit level; e.g. "Senior Laravel Developer · 5 years building payment APIs").
+- personal.linkedin, personal.github, personal.website: profile links exactly as written in the CV.
+- personal.address: city and country from the CV.
+- education.details: grades, thesis or final-year project, honours, relevant modules. education.location: the school's city if given.
+- languages.other[].listening/reading/speaking_production/speaking_interaction/writing: use the CEFR level (A1-C2) the CV gives for that language for every column; leave empty if the CV gives no level. "Native" languages go in languages.mother (comma-separated if several).
+- certifications: title = certificate name, type = issuing organisation, detail = date or other detail.
+- projects: title, subtitle = type or technologies, period, description, link.
 
 SCHEMA KEYS:
 - Top level: personal object, about string, education array, experience array, projects array, languages object, driving string, interests array, hobbies string, skills array, certifications array.
@@ -554,27 +710,22 @@ PROMPT;
         return match (strtolower(trim($tone))) {
             'concise' => <<<TEXT
 Style: Concise.
-- Keep the about section short, around 2-3 focused sentences.
-- Use compact experience descriptions and short bullet-style highlights.
-- Remove repetition and low-relevance wording.
-- Prioritize only the strongest job-matching skills and responsibilities.
-- Keep every section tight while preserving factual CV content.
+- About section of 2-3 focused sentences.
+- Short, punchy highlights: action and result, no filler words.
+- Remove repeated wording, but keep every fact, role and achievement (the completeness rule still applies).
 TEXT,
             'detailed' => <<<TEXT
 Style: Detailed.
-- Use a richer about section with clear job alignment.
-- Expand relevant work experience, projects, and highlights with more context.
+- A richer about section (4 sentences) with clear job alignment.
+- Fuller highlights that add the context the CV gives (what was built, for whom, with which tools, the result).
 - Use the job's terminology where the CV describes the same thing.
-- Preserve optional sections such as certifications, languages, interests, and hobbies when present.
 - Be specific using only details the CV gives; never fill gaps.
 TEXT,
             default => <<<TEXT
 Style: Professional.
-- Use balanced, polished recruiter-friendly language.
-- Keep sections clear, confident, and specific.
-- Emphasize job-matching skills and experience without over-writing.
+- Balanced, polished, recruiter-friendly language.
+- Clear, confident and specific highlights that keep the CV's details (names, tools, numbers).
 - Use the job's terminology only where the CV describes the same thing.
-- Preserve readability and truthfulness.
 TEXT,
         };
     }
@@ -598,6 +749,10 @@ TEXT,
                 'email' => '',
                 'whatsapp' => '',
                 'address' => '',
+                'headline' => '',
+                'linkedin' => '',
+                'github' => '',
+                'website' => '',
             ],
             'about' => '',
             'education' => [],
@@ -661,7 +816,7 @@ TEXT,
         $normalized['date'] = $this->firstText($entry, ['date', 'period', 'year', 'years']) ?: $this->dateRange($entry);
         $normalized['degree'] = $this->firstText($entry, ['degree', 'qualification', 'title', 'name']);
         $normalized['institution'] = $this->firstText($entry, ['institution', 'school', 'university', 'college']);
-        $normalized['details'] = $this->firstText($entry, ['details', 'description', 'field', 'field_of_study']);
+        $normalized['details'] = $this->firstText($entry, ['details', 'description', 'summary', 'notes', 'field', 'field_of_study']);
 
         return $this->hasAnyText($normalized, ['date', 'location', 'degree', 'institution', 'details']) ? $normalized : null;
     }

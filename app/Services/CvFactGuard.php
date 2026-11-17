@@ -76,6 +76,7 @@ class CvFactGuard
             }
         };
 
+        $add('personal.headline', $cv['personal']['headline'] ?? '');
         $add('about', $cv['about'] ?? '');
         $add('hobbies', $cv['hobbies'] ?? '');
 
@@ -191,6 +192,12 @@ class CvFactGuard
         $email = strtolower(trim((string) ($personal['email'] ?? '')));
         if ($email !== '' && ! str_contains($this->lowerSource, $email)) {
             $personal['email'] = $this->drop('Email', $email);
+        }
+
+        $personal['headline'] = $this->prose((string) ($personal['headline'] ?? ''), 'Headline');
+
+        foreach (['linkedin' => 'LinkedIn', 'github' => 'GitHub', 'website' => 'Website'] as $field => $label) {
+            $personal[$field] = $this->link((string) ($personal[$field] ?? ''), $label);
         }
 
         $phoneDigits = preg_replace('/\D+/', '', (string) ($personal['phone'] ?? '')) ?? '';
@@ -378,14 +385,18 @@ class CvFactGuard
 
     private function numbersSupported(string $text): bool
     {
-        // Each number must appear as its own value in the source ("40%" needs a "40"), not merely as
-        // digits inside something else such as a phone number.
+        // Each number must appear as its own value in the source ("40%" needs a "40"), not merely as digits
+        // inside a longer number such as a phone number. Letters around it are fine ("N+1", "C1", "Laravel 10").
         preg_match_all('/\d+(?:[.,]\d+)*/', $text, $matches);
         foreach ($matches[0] as $number) {
-            foreach (explode(' ', $this->flatten($number)) as $part) {
-                if ($part !== '' && ! isset($this->words[$part])) {
-                    return false;
-                }
+            if (preg_match('/(?<![\d.,])'.preg_quote($number, '/').'(?![\d]|[.,]\d)/', $this->lowerSource) === 1) {
+                continue;
+            }
+
+            // "1,000" written as "1000" (or the reverse) still counts.
+            $plain = str_replace([',', '.'], '', $number);
+            if (! preg_match('/(?<![\d.,])'.preg_quote($plain, '/').'(?![\d]|[.,]\d)/', str_replace(',', '', $this->lowerSource))) {
+                return false;
             }
         }
 

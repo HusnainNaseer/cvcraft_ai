@@ -40,7 +40,7 @@ return [
         'fallback_api_key' => env('GEMINI_FALLBACK_API_KEY'),
         'api_keys' => env('GEMINI_API_KEYS'),
         // Tried in order; the next model is used when every key fails on the previous one.
-        'models' => env('GEMINI_MODELS', 'gemini-flash-latest,gemini-flash-lite-latest'),
+        'models' => env('GEMINI_MODELS', 'gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.5-flash,gemini-flash-latest'),
         // "low" keeps answers fast; leave empty for models without thinking support.
         'thinking_level' => env('GEMINI_THINKING_LEVEL', 'low'),
     ],

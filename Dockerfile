@@ -35,7 +35,7 @@ ENV APP_ENV=production \
     MAIL_MAILER=log \
     CHROME_PATH=/usr/bin/chromium \
     CHROME_NO_SANDBOX=true \
-    GEMINI_MODELS=gemini-flash-latest,gemini-flash-lite-latest \
+    GEMINI_MODELS=gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.5-flash,gemini-flash-latest \
     GEMINI_THINKING_LEVEL=low \
     PHP_CLI_SERVER_WORKERS=4
 

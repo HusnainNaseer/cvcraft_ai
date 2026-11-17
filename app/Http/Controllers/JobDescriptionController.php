@@ -43,7 +43,7 @@ class JobDescriptionController extends Controller
 
         $cvText = $parser->extract($request->file('cv'));
         if (Str::length($cvText) < 30) {
-            return response()->json(['message' => 'Could not read enough CV text to compare skills.'], 422);
+            return response()->json(['message' => 'Skills match will show after tailoring for this file.'], 422);
         }
 
         return response()->json([

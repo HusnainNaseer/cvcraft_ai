@@ -8,6 +8,7 @@ use App\Http\Controllers\JobDescriptionController;
 use Illuminate\Support\Facades\Route;
 
 Route::view('/', 'welcome')->name('home');
+Route::view('/privacy', 'privacy')->name('privacy');
 
 // Fresh CSRF token for pages left open longer than the session lifetime.
 Route::get('/csrf-token', fn () => response()->json(['token' => csrf_token()])
@@ -22,8 +23,12 @@ Route::post('/job-description/skills', [JobDescriptionController::class, 'skills
 // Tailored CV
 Route::post('/cv/tailor', [CvController::class, 'tailor'])
     ->middleware('throttle:10,1')->name('cv.tailor');
+Route::post('/cv/fact-check', [CvController::class, 'factCheck'])
+    ->middleware('throttle:20,1')->name('cv.fact-check');
 Route::post('/cv/photo', [CvController::class, 'updatePhoto'])->name('cv.photo');
 Route::post('/cv/theme', [CvController::class, 'updateTheme'])->name('cv.theme');
+Route::get('/cv/content', [CvController::class, 'content'])->name('cv.content');
+Route::post('/cv/content', [CvController::class, 'updateContent'])->middleware('throttle:60,1')->name('cv.content.update');
 Route::get('/cv/download', [DownloadController::class, 'cv'])->name('cv.download');
 Route::get('/cv/share', [DownloadController::class, 'share'])->name('cv.share');
 

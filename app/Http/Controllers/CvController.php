@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Exceptions\GeminiException;
 use App\Services\ApplicationContact;
+use App\Services\CvContent;
 use App\Services\CvUploadParser;
 use App\Services\GeminiService;
 use App\Services\SkillMatcher;
@@ -55,8 +56,7 @@ class CvController extends Controller
             'job.emails.*' => ['email'],
         ]);
 
-        // Tailoring plus the fact-check pass can take two Gemini calls.
-        set_time_limit(300);
+        set_time_limit(180);
 
         $layout = $this->loadLayoutTemplate($validated['template'] ?? 'default.json');
         if ($layout === null) {
@@ -87,13 +87,15 @@ class CvController extends Controller
 
         $cv = [...$tailored['cv'], 'theme' => $this->theme('purple')];
         $job = $this->jobContext($validated);
+        // Pasted job text has no title or company: use what the AI read from the description.
+        $job['title'] = $job['title'] ?: $tailored['fit']['target_role'];
+        $job['company'] = $job['company'] ?: $tailored['fit']['company'];
         $token = $this->results->create($cv, $job, $tailored['source']);
 
         Log::info('CV tailored', [
             'result' => $token,
             'job' => $job['title'] ?: $job['url'],
-            'verified' => $tailored['factCheck']['verified'],
-            'corrections' => count($tailored['factCheck']['removed']),
+            'corrections' => count($tailored['removed']),
         ]);
 
         return response()->json([
@@ -102,10 +104,49 @@ class CvController extends Controller
                 ...$this->resultUrls($token),
                 'result' => $token,
                 'reasoning' => $tailored['reasoning'],
-                'factCheck' => $tailored['factCheck'],
+                // Removed by the instant checks; the AI review follows via cv.fact-check.
+                'removed' => $tailored['removed'],
+                'fit' => $tailored['fit'],
                 'match' => $matcher->match($validated['jobDescription'], $this->searchableText($cv)),
                 'application' => ApplicationContact::resolve($job),
             ],
+        ]);
+    }
+
+    /**
+     * Second stage of tailoring: the AI reviews every rewritten sentence against the original CV.
+     */
+    public function factCheck(Request $request, GeminiService $gemini, SkillMatcher $matcher): JsonResponse
+    {
+        $validated = $request->validate([
+            'result' => ['required', 'string', 'regex:'.TailoredCvRepository::TOKEN_PATTERN],
+        ]);
+
+        set_time_limit(90);
+
+        $record = $this->results->find($validated['result']);
+        if (! $record) {
+            return response()->json(['message' => 'Tailored CV not found. Please generate it again.'], 404);
+        }
+
+        $description = (string) ($record['job']['description'] ?? '');
+        $checked = $gemini->factCheckCv($record['cv'], $record['source'], $description);
+
+        if ($checked['cv'] !== $record['cv']) {
+            $this->results->updateCv($validated['result'], $checked['cv']);
+        }
+
+        Log::info('CV fact-checked', [
+            'result' => $validated['result'],
+            'verified' => $checked['factCheck']['verified'],
+            'corrections' => count($checked['factCheck']['removed']),
+        ]);
+
+        return response()->json([
+            'success' => true,
+            ...$this->resultUrls($validated['result']),
+            'factCheck' => $checked['factCheck'],
+            'match' => $description !== '' ? $matcher->match($description, $this->searchableText($checked['cv'])) : null,
         ]);
     }
 
@@ -151,6 +192,60 @@ class CvController extends Controller
         $this->results->updateCv($validated['result'], [...$record['cv'], 'theme' => $this->theme($validated['theme'])]);
 
         return response()->json(['success' => true, ...$this->resultUrls($validated['result'])]);
+    }
+
+    /**
+     * The tailored CV's text, for the editor.
+     */
+    public function content(Request $request, CvContent $content): JsonResponse
+    {
+        $validated = $request->validate([
+            'result' => ['required', 'string', 'regex:'.TailoredCvRepository::TOKEN_PATTERN],
+        ]);
+
+        $record = $this->results->find($validated['result']);
+        if (! $record) {
+            return response()->json(['message' => 'Tailored CV not found. Please generate it again.'], 404);
+        }
+
+        return response()->json(['cv' => $content->editable($record['cv'])]);
+    }
+
+    /**
+     * Save the user's edits. The user is the authority on their own CV, so edits are not fact-checked,
+     * only cleaned to the template schema.
+     */
+    public function updateContent(Request $request, CvContent $content): JsonResponse
+    {
+        $validated = $request->validate([
+            'result' => ['required', 'string', 'regex:'.TailoredCvRepository::TOKEN_PATTERN],
+            'cv' => ['required', 'array'],
+        ]);
+
+        $record = $this->results->find($validated['result']);
+        if (! $record) {
+            return response()->json(['message' => 'Tailored CV not found. Please generate it again.'], 404);
+        }
+
+        $cv = $content->merge($record['cv'], $validated['cv']);
+        if (trim((string) data_get($cv, 'personal.name')) === '') {
+            return response()->json(['message' => 'Your name cannot be empty.', 'errors' => ['cv.personal.name' => ['Your name cannot be empty.']]], 422);
+        }
+
+        $this->results->updateCv($validated['result'], $cv);
+
+        return response()->json([
+            'success' => true,
+            ...$this->resultUrls($validated['result']),
+            'match' => $this->matchFor($record['job'], $cv),
+        ]);
+    }
+
+    private function matchFor(array $job, array $cv): ?array
+    {
+        $description = (string) ($job['description'] ?? '');
+
+        return $description !== '' ? app(SkillMatcher::class)->match($description, $this->searchableText($cv)) : null;
     }
 
     private function resultUrls(string $token): array

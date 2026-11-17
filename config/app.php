@@ -16,6 +16,11 @@ return [
     'name' => env('APP_NAME', 'Laravel'),
 
     /*
+    | Contact address shown on the Privacy page and in the footer "Support" link. Hidden when empty.
+    */
+    'support_email' => env('SUPPORT_EMAIL'),
+
+    /*
     |--------------------------------------------------------------------------
     | Application Environment
     |--------------------------------------------------------------------------

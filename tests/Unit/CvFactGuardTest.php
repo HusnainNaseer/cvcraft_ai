@@ -110,6 +110,24 @@ TEXT;
         $this->assertSame('', $this->guard->enforce($cv, self::SOURCE)['cv']['about']);
     }
 
+    public function test_numbers_inside_words_and_formatted_numbers_are_recognised(): void
+    {
+        $source = self::SOURCE."\nFixed N+1 queries in Laravel 10. English (C1). Served 1,000 customers. 3.4 CGPA.";
+        $cv = $this->cv();
+        $cv['experience'][0]['highlights'] = [
+            'Fixed N+1 queries in Laravel 10, cutting load time by 40%.',
+            'Served 1000 customers.',
+            'Graduated with a 3.4 CGPA.',
+            'Served 3,000 customers.',
+        ];
+        $cv['languages'] = ['mother' => '', 'other' => [['name' => 'English', 'listening' => 'C1']]];
+
+        $result = $this->guard->enforce($cv, $source)['cv'];
+
+        $this->assertSame(array_slice($cv['experience'][0]['highlights'], 0, 3), $result['experience'][0]['highlights']);
+        $this->assertSame('C1', $result['languages']['other'][0]['listening']);
+    }
+
     public function test_mother_tongue_is_not_guessed(): void
     {
         $cv = $this->cv();

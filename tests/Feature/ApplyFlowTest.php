@@ -68,9 +68,13 @@ class ApplyFlowTest extends TestCase
             ->assertJsonPath('data.application.method', 'email')
             ->assertJsonPath('data.application.email', 'careers@acme.io')
             ->assertJsonPath('data.match.missing', ['Docker'])
-            ->assertJsonPath('data.factCheck', ['verified' => true, 'removed' => []]);
+            ->assertJsonPath('data.removed', []);
 
         $token = $response->json('data.result');
+        $this->postJson('/cv/fact-check', ['result' => $token])
+            ->assertOk()
+            ->assertJsonPath('factCheck', ['verified' => true, 'removed' => []])
+            ->assertJsonPath('match.missing', ['Docker']);
         $record = app(TailoredCvRepository::class)->find($token);
 
         $this->assertSame('Acme', $record['job']['company']);
@@ -159,7 +163,7 @@ class ApplyFlowTest extends TestCase
     public function test_tailoring_removes_claims_that_are_not_in_the_original_cv(): void
     {
         $invented = $this->sampleCv();
-        $invented['about'] = 'PHP and Laravel developer who led a team of 8 engineers on SaaS platforms.';
+        $invented['about'] = 'PHP and Laravel developer who led engineering teams building SaaS platforms.';
         $invented['experience'][0] += ['business_sector' => 'Software Development', 'department' => 'Engineering'];
         $invented['experience'][] = ['title' => 'Tech Lead', 'company' => 'Google', 'period' => '2019 - 2021'];
         $invented['skills'][0]['items'][] = 'Docker';
@@ -179,8 +183,14 @@ class ApplyFlowTest extends TestCase
             'cv' => UploadedFile::fake()->createWithContent('cv.txt', self::SOURCE_CV),
         ], ['Accept' => 'application/json'])->assertOk();
 
-        $this->assertTrue($response->json('data.factCheck.verified'));
-        $this->assertNotEmpty($response->json('data.factCheck.removed'));
+        $this->assertNotEmpty($response->json('data.removed'), 'invented employer, sector and skill removed at once');
+        $this->assertSame('PHP and Laravel developer who led engineering teams building SaaS platforms.',
+            app(TailoredCvRepository::class)->find($response->json('data.result'))['cv']['about'], 'sentences wait for the AI review');
+
+        $check = $this->postJson('/cv/fact-check', ['result' => $response->json('data.result')])->assertOk();
+        $this->assertTrue($check->json('factCheck.verified'));
+        $this->assertNotEmpty($check->json('factCheck.removed'));
+        $this->assertContains('Docker', $check->json('match.missing'));
 
         $record = app(TailoredCvRepository::class)->find($response->json('data.result'));
         $cv = $record['cv'];
@@ -193,6 +203,7 @@ class ApplyFlowTest extends TestCase
         $this->assertSame('', $cv['languages']['mother']);
         $this->assertSame('', $cv['languages']['other'][0]['listening']);
         $this->assertContains('Docker', $response->json('data.match.missing'), 'the gap is shown to the user, not hidden');
+        $this->assertSame('', $record['cv']['about']);
     }
 
     public function test_code_checks_still_apply_when_the_ai_fact_checker_fails(): void
@@ -207,7 +218,9 @@ class ApplyFlowTest extends TestCase
             'cv' => UploadedFile::fake()->createWithContent('cv.txt', self::SOURCE_CV),
         ], ['Accept' => 'application/json'])->assertOk();
 
-        $this->assertFalse($response->json('data.factCheck.verified'));
+        $this->postJson('/cv/fact-check', ['result' => $response->json('data.result')])
+            ->assertOk()
+            ->assertJsonPath('factCheck.verified', false);
         $cv = app(TailoredCvRepository::class)->find($response->json('data.result'))['cv'];
         $this->assertSame('', $cv['experience'][0]['business_sector']);
     }
